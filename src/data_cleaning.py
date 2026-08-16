@@ -43,19 +43,15 @@ print(f"Date range:     {df['date'].min()} to {df['date'].max()}")
 # -------------------------------------------------------
 # STEP 2 - CHECK FOR DATE GAPS
 # -------------------------------------------------------
-# A gap would mean we are missing entire days of data.
-# We need to know this before we calculate averages.
 
 print("\n--- DATE GAP CHECK ---")
 
-# Create a complete list of every day from start to end
 full_date_range = pd.date_range(
     start = df["date"].min(),
     end   = df["date"].max(),
-    freq  = "D"   # D means daily
+    freq  = "D"
 )
 
-# Find any dates that should exist but don't
 missing_dates = full_date_range.difference(df["date"])
 
 if len(missing_dates) == 0:
@@ -70,10 +66,9 @@ else:
 
 print("\n--- MISSING VALUE CHECK ---")
 
-missing = df.isnull().sum()
+missing     = df.isnull().sum()
 missing_pct = (missing / len(df) * 100).round(2)
 
-# Show missing values as a table
 missing_report = pd.DataFrame({
     "missing_count"   : missing,
     "missing_percent" : missing_pct
@@ -84,28 +79,16 @@ print(missing_report)
 # -------------------------------------------------------
 # STEP 4 - INVESTIGATE THE SOLAR RADIATION GAP
 # -------------------------------------------------------
-# We already know solar_rad has ~1095 missing values.
-# Let's find out exactly which years are affected.
 
 print("\n--- SOLAR RADIATION MISSING DATA BY YEAR ---")
 
-# Find all rows where solar_rad is missing
-solar_missing = df[df["solar_rad"].isnull()]
-
-# Count missing by year
-missing_by_year = solar_missing.groupby("year").size()
+solar_missing    = df[df["solar_rad"].isnull()]
+missing_by_year  = solar_missing.groupby("year").size()
 print(missing_by_year)
 
 # -------------------------------------------------------
 # STEP 5 - CHECK FOR SUSPICIOUS TEMPERATURE VALUES
 # -------------------------------------------------------
-# Remember: we should NOT blindly delete extreme values.
-# An extreme value might be:
-# - A real weather event (heat wave, cold snap)
-# - A measurement error
-# - A data processing error
-#
-# We investigate FIRST.
 
 print("\n--- TEMPERATURE RANGE CHECK ---")
 
@@ -116,9 +99,6 @@ print(f"temp_max:  min={df['temp_max'].min():.2f}°C   "
 print(f"temp_min:  min={df['temp_min'].min():.2f}°C   "
       f"max={df['temp_min'].max():.2f}°C")
 
-# Check for physically impossible values
-# For Vojvodina, temperatures below -40°C or above 50°C
-# would be extremely suspicious
 TEMP_MIN_PLAUSIBLE = -40.0
 TEMP_MAX_PLAUSIBLE =  50.0
 
@@ -141,8 +121,6 @@ if len(suspicious_low) > 0:
 # -------------------------------------------------------
 # STEP 6 - CHECK FOR IMPOSSIBLE COMBINATIONS
 # -------------------------------------------------------
-# temp_min should never be higher than temp_max on the same day
-# If it is, something is wrong with that row
 
 print("\n--- LOGICAL CONSISTENCY CHECK ---")
 
@@ -163,7 +141,6 @@ print(f"Days with zero rain:     {(df['precipitation'] == 0).sum()}")
 print(f"Days with rain > 50mm:   {(df['precipitation'] > 50).sum()}")
 print(f"Days with rain > 100mm:  {(df['precipitation'] > 100).sum()}")
 
-# Show the 5 wettest days on record
 print("\nTop 5 wettest days:")
 print(df.nlargest(5, "precipitation")[
     ["date","precipitation","temp_avg"]
@@ -180,26 +157,13 @@ print(df[["temp_avg","temp_max","temp_min",
 # -------------------------------------------------------
 # STEP 9 - CLEAN THE DATA
 # -------------------------------------------------------
-# Based on our investigation, here is what we will do:
-#
-# 1. Solar radiation missing for early years - we will KEEP
-#    these rows but note that solar_rad is unavailable.
-#    We will not delete 3 years of temperature data just
-#    because solar radiation is missing.
-#
-# 2. No impossible temperature values found - no action needed.
-#
-# 3. No date gaps found - data is complete.
-#
-# We make a clean copy and add a flag column for solar data.
 
 print("\n--- CLEANING DATA ---")
 
-df_clean = df.copy()  # always work on a copy, never the original
+df_clean = df.copy()
 
 # Add a flag so we always know which rows have solar data
 df_clean["solar_rad_available"] = df_clean["solar_rad"].notna()
-# notna() returns True if the value is NOT missing
 
 print(f"Rows with solar radiation data:    "
       f"{df_clean['solar_rad_available'].sum()}")
