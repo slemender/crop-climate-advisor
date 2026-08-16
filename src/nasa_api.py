@@ -1,177 +1,153 @@
-# src/nasa_api.py
+# src/data_cleaning.py
 #
-# Fetch 45+ years of daily climate data from NASA POWER
-# for Vojvodina, Serbia and save it as a CSV file.
-#
-# What this script does:
-# 1. Asks NASA for daily data from 1981 to July 2026
-# 2. Converts the response into a pandas DataFrame
-# 3. Displays the first and last few rows
-# 4. Saves the data as a CSV file in data/raw/
+# Clean and validate NASA POWER climate data.
+# File paths read from config.py
 
-import requests      # talks to the internet
-import pandas as pd  # data analysis library
-import numpy as np   # numerical operations
-import os            # lets us work with files and folders
+import pandas as pd
+import numpy as np
+import os
+import sys
+
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+from config import CONFIG
 
 # -------------------------------------------------------
 # CONFIGURATION
 # -------------------------------------------------------
 
-LATITUDE       = 45.52170251446399
-LONGITUDE      = 19.5709129680694
-LOCATION_NAME  = "Vojvodina, Serbia"
+INPUT_FILE    = CONFIG["raw_data_file"]
+OUTPUT_FILE   = CONFIG["clean_data_file"]
+LOCATION_NAME = CONFIG["location_name"]
 
-# Date range - NASA POWER data starts from 1981
-# We stop at the last complete month to avoid partial data
-START_DATE = "19810101"   # January 1st 1981
-END_DATE   = "20260731"   # July 31st 2026 - last complete month
+TEMP_MIN_PLAUSIBLE = -40.0
+TEMP_MAX_PLAUSIBLE =  50.0
 
-# Where to save our data
-OUTPUT_FOLDER = "data/raw"
-OUTPUT_FILE   = "data/raw/vojvodina_nasa_power_daily.csv"
+# -------------------------------------------------------
+# LOAD
+# -------------------------------------------------------
 
-# NASA POWER API
-NASA_POWER_URL = "https://power.larc.nasa.gov/api/temporal/daily/point"
+print("Loading data...")
+print("-" * 60)
 
-# Variables we are requesting
-VARIABLES = ",".join([
-    "T2M",               # Average temperature at 2 metres (°C)
-    "T2M_MAX",           # Maximum daily temperature (°C)
-    "T2M_MIN",           # Minimum daily temperature (°C)
-    "PRECTOTCORR",       # Total precipitation corrected (mm/day)
-    "RH2M",              # Relative humidity at 2 metres (%)
-    "ALLSKY_SFC_SW_DWN", # Solar radiation (MJ/m²/day)
-    "WS2M",              # Wind speed at 2 metres (m/s)
+df = pd.read_csv(INPUT_FILE)
+df["date"] = pd.to_datetime(df["date"])
+
+print(f"Location:    {LOCATION_NAME}")
+print(f"Rows loaded: {len(df)}")
+print(f"Columns:     {list(df.columns)}")
+print(f"Date range:  {df['date'].min()} to {df['date'].max()}")
+
+# -------------------------------------------------------
+# DATE GAP CHECK
+# -------------------------------------------------------
+
+print("\n--- DATE GAP CHECK ---")
+
+full_range    = pd.date_range(
+    start=df["date"].min(),
+    end=df["date"].max(),
+    freq="D"
+)
+missing_dates = full_range.difference(df["date"])
+
+if len(missing_dates) == 0:
+    print("No date gaps found — every day is present ✓")
+else:
+    print(f"WARNING: {len(missing_dates)} missing dates!")
+    print(missing_dates)
+
+# -------------------------------------------------------
+# MISSING VALUE CHECK
+# -------------------------------------------------------
+
+print("\n--- MISSING VALUE CHECK ---")
+
+missing     = df.isnull().sum()
+missing_pct = (missing / len(df) * 100).round(2)
+
+print(pd.DataFrame({
+    "missing_count"   : missing,
+    "missing_percent" : missing_pct
+}))
+
+# -------------------------------------------------------
+# SOLAR RADIATION MISSING BY YEAR
+# -------------------------------------------------------
+
+print("\n--- SOLAR RADIATION MISSING DATA BY YEAR ---")
+solar_missing  = df[df["solar_rad"].isnull()]
+missing_by_year = solar_missing.groupby("year").size()
+print(missing_by_year)
+
+# -------------------------------------------------------
+# TEMPERATURE RANGE CHECK
+# -------------------------------------------------------
+
+print("\n--- TEMPERATURE RANGE CHECK ---")
+
+print(f"temp_avg: min={df['temp_avg'].min():.2f}°C  "
+      f"max={df['temp_avg'].max():.2f}°C")
+print(f"temp_max: min={df['temp_max'].min():.2f}°C  "
+      f"max={df['temp_max'].max():.2f}°C")
+print(f"temp_min: min={df['temp_min'].min():.2f}°C  "
+      f"max={df['temp_min'].max():.2f}°C")
+
+suspicious_high = df[df["temp_max"] > TEMP_MAX_PLAUSIBLE]
+suspicious_low  = df[df["temp_min"] < TEMP_MIN_PLAUSIBLE]
+
+print(f"\nDays above {TEMP_MAX_PLAUSIBLE}°C: {len(suspicious_high)}")
+print(f"Days below {TEMP_MIN_PLAUSIBLE}°C: {len(suspicious_low)}")
+
+if len(suspicious_high) > 0:
+    print(suspicious_high[["date","temp_avg","temp_max","temp_min"]])
+if len(suspicious_low) > 0:
+    print(suspicious_low[["date","temp_avg","temp_max","temp_min"]])
+
+# -------------------------------------------------------
+# LOGICAL CONSISTENCY CHECK
+# -------------------------------------------------------
+
+print("\n--- LOGICAL CONSISTENCY CHECK ---")
+impossible = df[df["temp_min"] > df["temp_max"]]
+print(f"Rows where temp_min > temp_max: {len(impossible)}")
+
+# -------------------------------------------------------
+# PRECIPITATION CHECK
+# -------------------------------------------------------
+
+print("\n--- PRECIPITATION CHECK ---")
+print(f"Max single day rainfall: {df['precipitation'].max():.2f} mm")
+print(f"Days with zero rain:     {(df['precipitation'] == 0).sum()}")
+print(f"Days with rain > 50mm:   {(df['precipitation'] > 50).sum()}")
+
+print("\nTop 5 wettest days:")
+print(df.nlargest(5, "precipitation")[
+    ["date","precipitation","temp_avg"]
 ])
 
-# NASA uses -999 to indicate missing data
-MISSING_VALUE = -999.0
-
 # -------------------------------------------------------
-# STEP 1 - SEND REQUEST TO NASA
+# BASIC STATISTICS
 # -------------------------------------------------------
 
-params = {
-    "latitude"   : LATITUDE,
-    "longitude"  : LONGITUDE,
-    "start"      : START_DATE,
-    "end"        : END_DATE,
-    "community"  : "AG",         # Agricultural dataset
-    "parameters" : VARIABLES,
-    "format"     : "JSON",
-    "header"     : "true",
-}
-
-print(f"Requesting NASA POWER data for {LOCATION_NAME}")
-print(f"Date range: {START_DATE} to {END_DATE}")
-print(f"Variables: {VARIABLES}")
-print("This may take 30-60 seconds for 45 years of data...")
-print("-" * 60)
-
-response = requests.get(NASA_POWER_URL, params=params, timeout=120)
-# timeout=120 means: if NASA does not respond within 120 seconds, give up
+print("\n--- BASIC STATISTICS ---")
+print(df[["temp_avg","temp_max","temp_min",
+          "precipitation","humidity"]].describe().round(2))
 
 # -------------------------------------------------------
-# STEP 2 - CHECK THE RESPONSE
+# CLEAN AND SAVE
 # -------------------------------------------------------
 
-if response.status_code != 200:
-    print(f"ERROR - NASA returned status code: {response.status_code}")
-    print(response.text[:500])
-    exit()
+print("\n--- CLEANING DATA ---")
 
-print(f"SUCCESS - NASA responded (status code: {response.status_code})")
+df_clean = df.copy()
+df_clean["solar_rad_available"] = df_clean["solar_rad"].notna()
 
-# -------------------------------------------------------
-# STEP 3 - PARSE THE JSON RESPONSE
-# -------------------------------------------------------
+print(f"Rows with solar data:    {df_clean['solar_rad_available'].sum()}")
+print(f"Rows without solar data: {(~df_clean['solar_rad_available']).sum()}")
 
-data = response.json()
+os.makedirs(os.path.dirname(OUTPUT_FILE), exist_ok=True)
+df_clean.to_csv(OUTPUT_FILE, index=False)
 
-# Check if NASA sent any error messages
-if data.get("messages"):
-    print(f"NASA messages: {data['messages']}")
-
-# Navigate to the actual parameter data
-parameters = data["properties"]["parameter"]
-
-print(f"Variables received: {list(parameters.keys())}")
-
-# -------------------------------------------------------
-# STEP 4 - CONVERT TO PANDAS DATAFRAME
-# -------------------------------------------------------
-
-# Get all the dates from the temperature data
-dates = list(parameters["T2M"].keys())
-
-print(f"Total days received: {len(dates)}")
-
-# Build a dictionary with one entry per variable
-rows = {
-    "date"          : dates,
-    "temp_avg"      : list(parameters["T2M"].values()),
-    "temp_max"      : list(parameters["T2M_MAX"].values()),
-    "temp_min"      : list(parameters["T2M_MIN"].values()),
-    "precipitation" : list(parameters["PRECTOTCORR"].values()),
-    "humidity"      : list(parameters["RH2M"].values()),
-    "solar_rad"     : list(parameters["ALLSKY_SFC_SW_DWN"].values()),
-    "wind_speed"    : list(parameters["WS2M"].values()),
-}
-
-# Create the DataFrame
-df = pd.DataFrame(rows)
-
-# -------------------------------------------------------
-# STEP 5 - CONVERT DATE COLUMN TO PROPER DATE FORMAT
-# -------------------------------------------------------
-
-df["date"] = pd.to_datetime(df["date"], format="%Y%m%d")
-
-# -------------------------------------------------------
-# STEP 6 - REPLACE MISSING VALUES
-# -------------------------------------------------------
-
-# Replace NASA's -999 fill value with NaN (proper missing value)
-df = df.replace(MISSING_VALUE, np.nan)
-
-# -------------------------------------------------------
-# STEP 7 - ADD USEFUL COLUMNS
-# -------------------------------------------------------
-
-df["year"]  = df["date"].dt.year
-df["month"] = df["date"].dt.month
-df["day"]   = df["date"].dt.day
-
-# -------------------------------------------------------
-# STEP 8 - DISPLAY A PREVIEW
-# -------------------------------------------------------
-
-print("\nFirst 5 rows of data:")
-print("-" * 60)
-print(df.head())
-
-print("\nLast 5 rows of data:")
-print("-" * 60)
-print(df.tail())
-
-print("\nDataFrame shape (rows, columns):")
-print(df.shape)
-
-print("\nColumn data types:")
-print(df.dtypes)
-
-print("\nMissing value count per column:")
-print(df.isnull().sum())
-
-# -------------------------------------------------------
-# STEP 9 - SAVE AS CSV
-# -------------------------------------------------------
-
-os.makedirs(OUTPUT_FOLDER, exist_ok=True)
-
-df.to_csv(OUTPUT_FILE, index=False)
-
-print(f"\nData saved to: {OUTPUT_FILE}")
-print(f"Total records saved: {len(df)}")
-print("\nDone!")
+print(f"\nClean data saved to: {OUTPUT_FILE}")
+print(f"Total records: {len(df_clean)}")
+print("\nData cleaning complete!")

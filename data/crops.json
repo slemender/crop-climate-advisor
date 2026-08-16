@@ -1,0 +1,722 @@
+{
+  "potato": {
+    "name": "Potato",
+    "latin": "Solanum tuberosum",
+    "season_type": "cool",
+    "notes": "Cool-season crop. Heat is the primary threat. Without irrigation, rainfall during tuber bulking is critical. Early varieties that mature before July avoid both heat stress and summer drought. Strongly recommended for Vojvodina given recent climate trends.",
+
+    "germination": {
+      "soil_temp_min_c": 7,
+      "soil_temp_optimal_c": 15,
+      "soil_temp_max_c": 29,
+      "note": "Soil temperature at 10cm depth. Air temperature alone is insufficient — soil warms more slowly than air in spring."
+    },
+
+    "frost": {
+      "foliage_damage_c": -1.0,
+      "foliage_kill_c": -3.0,
+      "tuber_damage_c": -1.5,
+      "tolerance_stage": "none",
+      "note": "Emerging shoots are very frost sensitive. Tubers can tolerate brief light frost if well covered with soil. A late frost in April can kill emerged shoots but plants often recover from the tuber."
+    },
+
+    "heat": {
+      "growth_slows_c": 25,
+      "severe_stress_c": 35,
+      "tuber_initiation_stops_c": 29,
+      "note": "Tuber initiation stops above 29C night temperature. Given Vojvodina now averages 20+ days above 35C in summer, late-season potatoes face serious heat risk."
+    },
+
+    "optimal": {
+      "day_temp_c": 18,
+      "night_temp_c": 12,
+      "temp_range_c": [15, 20],
+      "note": "Potatoes prefer cool nights. The day-night temperature difference is important for tuber quality and starch accumulation."
+    },
+
+    "water": {
+      "total_season_mm": 500,
+      "critical_period": "tuber initiation to bulking",
+      "drought_sensitivity": "high",
+      "irrigation_benefit": "very high",
+      "monthly_water_need_mm": {
+        "3": 40,
+        "4": 75,
+        "5": 110,
+        "6": 130,
+        "7": 120,
+        "8": 80,
+        "9": 40
+      },
+      "critical_month_min_rain_mm": {
+        "6": 80,
+        "7": 80,
+        "8": 60
+      },
+      "max_dry_days": {
+        "emergence": 14,
+        "vegetative": 10,
+        "tuber_initiation": 7,
+        "tuber_bulking": 7,
+        "maturation": 14
+      },
+      "no_irrigation_risk": "HIGH RISK without irrigation. July average rainfall (57mm) is well below the 120mm crop water need. Early varieties harvested by late June dramatically reduce this risk."
+    },
+
+    "gdd": {
+      "base_temp_c": 7,
+      "maturity_gdd_min": 1000,
+      "maturity_gdd_max": 1800,
+      "note": "Early varieties: ~1000-1200 GDD. Medium varieties: ~1300-1500 GDD. Late varieties: ~1600-1800 GDD."
+    },
+
+    "maturity": {
+      "early_days": 70,
+      "medium_days": 90,
+      "late_days": 120
+    },
+
+    "traditional_planting": {
+      "earliest": "March 15",
+      "typical_start": "April 1",
+      "typical_end": "April 20",
+      "latest": "May 1",
+      "note": "For no-irrigation growing, early varieties planted March-April and harvested June-July are strongly preferred."
+    },
+
+    "sources": [
+      "FAO Irrigation and Drainage Paper 33 and 56",
+      "European Association for Potato Research (EAPR)",
+      "Potato Association of America agronomy papers"
+    ]
+  },
+
+  "tomato": {
+    "name": "Tomato",
+    "latin": "Solanum lycopersicum",
+    "season_type": "warm",
+    "notes": "Warm-season crop. Cannot tolerate any frost. Also very sensitive to extreme heat during flowering. In Vojvodina, the challenge is navigating between late spring frost risk and summer heat stress.",
+
+    "germination": {
+      "soil_temp_min_c": 10,
+      "soil_temp_optimal_c": 22,
+      "soil_temp_max_c": 35,
+      "note": "Typically started indoors 6-8 weeks before transplanting. Do not transplant until frost risk is very low and nights are above 10C."
+    },
+
+    "frost": {
+      "foliage_damage_c": -0.5,
+      "foliage_kill_c": -1.5,
+      "tolerance_stage": "none",
+      "note": "Tomatoes are killed by even light frost. Do not transplant until the 90th percentile last frost date has passed — approximately April 24 in Vojvodina."
+    },
+
+    "heat": {
+      "flower_drop_starts_c": 32,
+      "flower_drop_severe_c": 35,
+      "severe_stress_c": 35,
+      "pollen_damage_c": 38,
+      "note": "With 20+ days above 35C per year in recent years, fruit set failure in July-August is a serious risk."
+    },
+
+    "optimal": {
+      "day_temp_c": 24,
+      "night_temp_c": 16,
+      "temp_range_c": [18, 27],
+      "note": "Night temperatures below 10C slow growth significantly and can cause poor fruit set."
+    },
+
+    "water": {
+      "total_season_mm": 600,
+      "critical_period": "flowering and fruit set",
+      "drought_sensitivity": "high",
+      "irrigation_benefit": "very high",
+      "monthly_water_need_mm": {
+        "4": 50,
+        "5": 100,
+        "6": 140,
+        "7": 160,
+        "8": 140,
+        "9": 80
+      },
+      "critical_month_min_rain_mm": {
+        "6": 100,
+        "7": 110,
+        "8": 100
+      },
+      "max_dry_days": {
+        "transplant": 7,
+        "vegetative": 10,
+        "flowering": 5,
+        "fruit_set": 5,
+        "fruit_development": 7,
+        "maturation": 10
+      },
+      "no_irrigation_risk": "VERY HIGH RISK without irrigation. Tomatoes need ~160mm in July but Vojvodina averages only 57mm. The rainfall deficit in July alone is ~103mm."
+    },
+
+    "gdd": {
+      "base_temp_c": 10,
+      "maturity_gdd_min": 1000,
+      "maturity_gdd_max": 1400,
+      "note": "Early cherry/salad types: ~1000 GDD. Main crop beefsteak types: ~1200-1400 GDD."
+    },
+
+    "maturity": {
+      "early_days": 60,
+      "medium_days": 75,
+      "late_days": 95
+    },
+
+    "traditional_planting": {
+      "start_indoors": "February 15 - March 1",
+      "transplant_safe": "May 1",
+      "transplant_late": "May 20",
+      "note": "Without irrigation, earlier planting allows fruit to develop in June when rainfall is higher."
+    },
+
+    "sources": [
+      "FAO Crop Water Requirements",
+      "UC Davis Vegetable Research and Information Center",
+      "Cornell Cooperative Extension"
+    ]
+  },
+
+  "onion": {
+    "name": "Onion",
+    "latin": "Allium cepa",
+    "season_type": "cool",
+    "notes": "Cool-season crop with good frost tolerance. Bulbing is triggered by day length — use long-day varieties for Vojvodina latitude ~45N. One of the easier crops for Vojvodina climate.",
+
+    "germination": {
+      "soil_temp_min_c": 2,
+      "soil_temp_optimal_c": 20,
+      "soil_temp_max_c": 35,
+      "note": "Onions can be direct seeded very early. Commonly started indoors January-February or direct seeded in March."
+    },
+
+    "frost": {
+      "foliage_damage_c": -3.0,
+      "foliage_kill_c": -8.0,
+      "tolerance_stage": "established plant",
+      "note": "Onions are significantly more frost tolerant than tomatoes or cucumbers. Established plants survive to approximately -6C to -8C. Young seedlings are more vulnerable."
+    },
+
+    "heat": {
+      "quality_decline_c": 33,
+      "severe_stress_c": 38,
+      "note": "Onions are more heat tolerant than tomatoes. Quality declines above 33C but severe stress and bolting occur around 38C."
+    },
+
+    "optimal": {
+      "day_temp_c": 20,
+      "night_temp_c": 10,
+      "temp_range_c": [13, 24],
+      "note": "Long-day varieties required at latitude 45N. Bulbing triggered by more than 14-16 hours daylight occurring naturally in May-June in Vojvodina."
+    },
+
+    "water": {
+      "total_season_mm": 450,
+      "critical_period": "bulb development",
+      "drought_sensitivity": "moderate-high",
+      "irrigation_benefit": "high",
+      "monthly_water_need_mm": {
+        "3": 35,
+        "4": 60,
+        "5": 90,
+        "6": 110,
+        "7": 90,
+        "8": 40
+      },
+      "critical_month_min_rain_mm": {
+        "5": 60,
+        "6": 75,
+        "7": 60
+      },
+      "max_dry_days": {
+        "seedling": 7,
+        "vegetative": 10,
+        "bulb_initiation": 7,
+        "bulb_development": 10,
+        "maturation": 14
+      },
+      "no_irrigation_risk": "MODERATE-HIGH RISK without irrigation. Onions have very shallow roots (~30cm) and cannot tolerate even short dry spells during bulbing. Early planting to complete bulbing in June before July rainfall decline is recommended."
+    },
+
+    "gdd": {
+      "base_temp_c": 4,
+      "maturity_gdd_min": 1200,
+      "maturity_gdd_max": 1800,
+      "note": "Day length is as important as temperature for bulbing initiation. Use long-day varieties only."
+    },
+
+    "maturity": {
+      "from_seed_days": 150,
+      "from_transplant_days": 120,
+      "from_sets_days": 90
+    },
+
+    "traditional_planting": {
+      "sets_earliest": "February 15",
+      "sets_typical": "March 1 - March 20",
+      "transplants_typical": "March 10 - April 1",
+      "direct_seed_typical": "March 1 - April 1",
+      "note": "Early planting is key without irrigation. Getting bulbs to develop in May-June uses the better rainfall period."
+    },
+
+    "sources": [
+      "FAO Agronomy Series",
+      "Wageningen University onion production guidelines",
+      "USDA Vegetable Production Handbook"
+    ]
+  },
+
+  "cucumber": {
+    "name": "Cucumber",
+    "latin": "Cucumis sativus",
+    "season_type": "warm",
+    "notes": "Warm-season crop. Extremely frost sensitive. Cucumbers are approximately 95% water by weight — making consistent rainfall absolutely critical. Without irrigation, cucumber success depends heavily on July-August rainfall.",
+
+    "germination": {
+      "soil_temp_min_c": 15,
+      "soil_temp_optimal_c": 30,
+      "soil_temp_max_c": 40,
+      "note": "Cucumbers need warm soil. Planting in cold soil causes poor germination and rotting seeds. Soil should be consistently above 15C."
+    },
+
+    "frost": {
+      "foliage_damage_c": -0.5,
+      "foliage_kill_c": -1.0,
+      "tolerance_stage": "none",
+      "note": "Extremely frost sensitive. Even a very light frost will damage or kill cucumber plants at any growth stage."
+    },
+
+    "heat": {
+      "quality_decline_c": 35,
+      "severe_stress_c": 40,
+      "note": "Cucumbers are more heat tolerant than tomatoes during flowering, but fruit quality declines above 35C. Water stress combined with heat is especially damaging."
+    },
+
+    "optimal": {
+      "day_temp_c": 27,
+      "night_temp_c": 18,
+      "temp_range_c": [24, 32],
+      "note": "Most heat-loving of our four crops. Main risks are frost at planting time and drought combined with heat in July-August."
+    },
+
+    "water": {
+      "total_season_mm": 500,
+      "critical_period": "flowering and fruit development",
+      "drought_sensitivity": "very high",
+      "irrigation_benefit": "very high",
+      "monthly_water_need_mm": {
+        "5": 80,
+        "6": 130,
+        "7": 160,
+        "8": 140,
+        "9": 60
+      },
+      "critical_month_min_rain_mm": {
+        "6": 90,
+        "7": 110,
+        "8": 100
+      },
+      "max_dry_days": {
+        "establishment": 7,
+        "vegetative": 7,
+        "flowering": 4,
+        "fruit_set": 4,
+        "fruit_development": 5,
+        "maturation": 7
+      },
+      "no_irrigation_risk": "VERY HIGH RISK without irrigation. Cucumbers need ~160mm in July but Vojvodina averages only 57mm — a deficit of ~103mm. Water stress causes bitter fruit, poor set, and plant wilting."
+    },
+
+    "gdd": {
+      "base_temp_c": 10,
+      "maturity_gdd_min": 700,
+      "maturity_gdd_max": 1000,
+      "note": "Fast maturing relative to other crops. A crop planted in late April can be harvesting before worst July-August heat."
+    },
+
+    "maturity": {
+      "early_days": 50,
+      "medium_days": 60,
+      "late_days": 70
+    },
+
+    "traditional_planting": {
+      "earliest_safe": "April 25",
+      "typical_start": "May 1",
+      "typical_end": "May 20",
+      "second_sowing": "July 1",
+      "note": "Without irrigation, early planting (late April) is strongly recommended so fruit develops in June when rainfall is higher."
+    },
+
+    "sources": [
+      "FAO Crop Water Requirements",
+      "UC Davis Vegetable Research Center",
+      "Cornell Cooperative Extension cucumber guide"
+    ]
+  },
+
+  "pepper": {
+    "name": "Pepper",
+    "latin": "Capsicum annuum",
+    "season_type": "warm",
+    "notes": "Warm-season crop. Very traditional in Vojvodina — paprika pepper is a regional specialty. More heat tolerant than tomatoes but equally frost sensitive. Without irrigation, summer drought is the main risk.",
+
+    "germination": {
+      "soil_temp_min_c": 16,
+      "soil_temp_optimal_c": 28,
+      "soil_temp_max_c": 35,
+      "note": "Peppers need warm soil and are slow to germinate. Start indoors 8-10 weeks before transplanting. Germination at optimal temperature takes 7-10 days."
+    },
+
+    "frost": {
+      "foliage_damage_c": -0.5,
+      "foliage_kill_c": -1.0,
+      "tolerance_stage": "none",
+      "note": "Peppers are as frost sensitive as cucumbers. Any frost kills the plant. Do not transplant until all frost risk has passed."
+    },
+
+    "heat": {
+      "flower_drop_starts_c": 35,
+      "severe_stress_c": 38,
+      "note": "Peppers are more heat tolerant than tomatoes. Flower drop begins around 35C but the plant survives and resumes fruiting when temperatures moderate. This makes peppers better suited to Vojvodina summers than tomatoes."
+    },
+
+    "optimal": {
+      "day_temp_c": 26,
+      "night_temp_c": 18,
+      "temp_range_c": [20, 30],
+      "note": "Peppers thrive in warm conditions and handle Vojvodina summers better than tomatoes. Night temperatures below 12C cause poor fruit set."
+    },
+
+    "water": {
+      "total_season_mm": 500,
+      "critical_period": "flowering and fruit development",
+      "drought_sensitivity": "high",
+      "irrigation_benefit": "very high",
+      "monthly_water_need_mm": {
+        "4": 40,
+        "5": 80,
+        "6": 120,
+        "7": 150,
+        "8": 130,
+        "9": 70
+      },
+      "critical_month_min_rain_mm": {
+        "6": 85,
+        "7": 100,
+        "8": 90
+      },
+      "max_dry_days": {
+        "transplant": 7,
+        "vegetative": 10,
+        "flowering": 6,
+        "fruit_set": 6,
+        "fruit_development": 8,
+        "maturation": 10
+      },
+      "no_irrigation_risk": "HIGH RISK without irrigation. July water need is ~150mm versus Vojvodina average of 57mm. However peppers are slightly more drought tolerant than tomatoes and recover better after stress periods."
+    },
+
+    "gdd": {
+      "base_temp_c": 10,
+      "maturity_gdd_min": 1200,
+      "maturity_gdd_max": 1600,
+      "note": "Bell peppers: ~1400-1600 GDD. Hot/paprika types: ~1200-1400 GDD. Vojvodina has sufficient heat accumulation for all types in most years."
+    },
+
+    "maturity": {
+      "early_days": 70,
+      "medium_days": 85,
+      "late_days": 100
+    },
+
+    "traditional_planting": {
+      "start_indoors": "January 15 - February 15",
+      "transplant_safe": "May 1",
+      "transplant_late": "May 20",
+      "note": "Peppers are traditionally started very early indoors in Vojvodina — January to February. Transplanting after May 1 when nights are consistently warm."
+    },
+
+    "sources": [
+      "FAO Crop Water Requirements",
+      "UC Davis Vegetable Research Center",
+      "University of Novi Sad Faculty of Agriculture publications",
+      "USDA Agricultural Research Service"
+    ]
+  },
+
+  "watermelon": {
+    "name": "Watermelon",
+    "latin": "Citrullus lanatus",
+    "season_type": "warm",
+    "notes": "Warm-season crop well suited to Vojvodina climate. More drought tolerant than cucumbers or tomatoes due to deep root system. Very heat tolerant. Main risk is frost at planting time. Traditional crop in southern Vojvodina.",
+
+    "germination": {
+      "soil_temp_min_c": 18,
+      "soil_temp_optimal_c": 32,
+      "soil_temp_max_c": 40,
+      "note": "Watermelons need the warmest soil of all our crops. Do not plant until soil is consistently above 18C at seed depth. In Vojvodina this is typically early May."
+    },
+
+    "frost": {
+      "foliage_damage_c": -0.5,
+      "foliage_kill_c": -1.0,
+      "tolerance_stage": "none",
+      "note": "Extremely frost sensitive. Any frost kills seedlings immediately. Must wait until all frost risk has passed."
+    },
+
+    "heat": {
+      "quality_decline_c": 38,
+      "severe_stress_c": 42,
+      "note": "Watermelons are the most heat tolerant of our crops. They actually prefer very warm conditions and handle Vojvodina summers well. Heat is rarely the limiting factor."
+    },
+
+    "optimal": {
+      "day_temp_c": 30,
+      "night_temp_c": 20,
+      "temp_range_c": [24, 35],
+      "note": "Watermelons love heat. The warm Vojvodina summers from June through August are ideal for fruit development and sugar accumulation."
+    },
+
+    "water": {
+      "total_season_mm": 400,
+      "critical_period": "fruit development and ripening",
+      "drought_sensitivity": "moderate",
+      "irrigation_benefit": "high",
+      "monthly_water_need_mm": {
+        "5": 60,
+        "6": 100,
+        "7": 120,
+        "8": 100,
+        "9": 40
+      },
+      "critical_month_min_rain_mm": {
+        "6": 70,
+        "7": 80,
+        "8": 70
+      },
+      "max_dry_days": {
+        "establishment": 10,
+        "vegetative": 14,
+        "flowering": 7,
+        "fruit_set": 7,
+        "fruit_development": 10,
+        "ripening": 14
+      },
+      "no_irrigation_risk": "MODERATE RISK without irrigation. Watermelons have deep roots and are more drought tolerant than other crops on this list. July deficit (~63mm below need) is manageable compared to tomatoes and cucumbers. Good candidate for rain-fed growing in Vojvodina."
+    },
+
+    "gdd": {
+      "base_temp_c": 10,
+      "maturity_gdd_min": 1400,
+      "maturity_gdd_max": 1800,
+      "note": "Vojvodina has sufficient GDD accumulation for most watermelon varieties. Early types: ~1400 GDD. Main crop types: ~1600-1800 GDD."
+    },
+
+    "maturity": {
+      "early_days": 75,
+      "medium_days": 90,
+      "late_days": 110
+    },
+
+    "traditional_planting": {
+      "transplant_safe": "May 1",
+      "transplant_typical": "May 10 - May 20",
+      "direct_seed": "May 10 - May 20",
+      "note": "Can be transplanted or direct seeded. Transplanting gives 2-3 week head start. Traditional planting in Vojvodina is mid-May."
+    },
+
+    "sources": [
+      "FAO Crop Water Requirements",
+      "USDA Agricultural Research Service",
+      "Oklahoma State University Extension watermelon guide"
+    ]
+  },
+
+  "sunflower": {
+    "name": "Sunflower",
+    "latin": "Helianthus annuus",
+    "season_type": "warm",
+    "notes": "One of the most important field crops in Vojvodina. Drought tolerant due to deep tap root. Heat tolerant. Excellent fit for Vojvodina climate and conditions. The most manageable warm-season crop without irrigation.",
+
+    "germination": {
+      "soil_temp_min_c": 8,
+      "soil_temp_optimal_c": 20,
+      "soil_temp_max_c": 35,
+      "note": "Sunflowers germinate in relatively cool soil and can be planted earlier than most warm-season crops. Emergence is reliable above 10C soil temperature."
+    },
+
+    "frost": {
+      "foliage_damage_c": -2.0,
+      "foliage_kill_c": -4.0,
+      "tolerance_stage": "seedling",
+      "note": "Young sunflower seedlings can tolerate light frost down to about -2C. Established plants are more tolerant. This allows earlier planting than tomatoes or cucumbers."
+    },
+
+    "heat": {
+      "quality_decline_c": 38,
+      "severe_stress_c": 42,
+      "note": "Sunflowers are very heat tolerant. Vojvodina summers pose little heat stress to sunflowers. This is one reason they are so well suited to the region."
+    },
+
+    "optimal": {
+      "day_temp_c": 25,
+      "night_temp_c": 15,
+      "temp_range_c": [20, 30],
+      "note": "Sunflowers thrive across a wide temperature range. They are adapted to exactly the kind of continental climate found in Vojvodina."
+    },
+
+    "water": {
+      "total_season_mm": 400,
+      "critical_period": "flowering and grain fill",
+      "drought_sensitivity": "low-moderate",
+      "irrigation_benefit": "moderate",
+      "monthly_water_need_mm": {
+        "4": 40,
+        "5": 70,
+        "6": 100,
+        "7": 120,
+        "8": 80,
+        "9": 30
+      },
+      "critical_month_min_rain_mm": {
+        "6": 60,
+        "7": 70,
+        "8": 50
+      },
+      "max_dry_days": {
+        "emergence": 14,
+        "vegetative": 14,
+        "bud_formation": 10,
+        "flowering": 7,
+        "grain_fill": 10,
+        "maturation": 21
+      },
+      "no_irrigation_risk": "LOW-MODERATE RISK without irrigation. Sunflowers have deep tap roots that access subsoil moisture unavailable to shallow-rooted crops. July deficit is present but manageable. This is the best warm-season crop for rain-fed growing in Vojvodina."
+    },
+
+    "gdd": {
+      "base_temp_c": 6,
+      "maturity_gdd_min": 1500,
+      "maturity_gdd_max": 2000,
+      "note": "Early hybrids: ~1500 GDD. Mid-season: ~1700 GDD. Late hybrids: ~2000 GDD. Vojvodina comfortably accumulates sufficient GDD for all types."
+    },
+
+    "maturity": {
+      "early_days": 90,
+      "medium_days": 110,
+      "late_days": 130
+    },
+
+    "traditional_planting": {
+      "earliest": "April 1",
+      "typical_start": "April 10",
+      "typical_end": "April 30",
+      "latest": "May 15",
+      "note": "Traditional Vojvodina planting window. Earlier planting allows better use of spring moisture and avoids late-season drought."
+    },
+
+    "sources": [
+      "FAO Crop Water Requirements",
+      "National Sunflower Association production guide",
+      "USDA Agricultural Research Service",
+      "University of Novi Sad Faculty of Agriculture"
+    ]
+  },
+
+  "corn": {
+    "name": "Corn",
+    "latin": "Zea mays",
+    "season_type": "warm",
+    "notes": "The single most important crop in Vojvodina. Well adapted to the continental climate but increasingly challenged by summer heat and drought. Without irrigation, yield variability is high. Pollen viability is affected above 38C — a temperature now exceeded several times per summer.",
+
+    "germination": {
+      "soil_temp_min_c": 10,
+      "soil_temp_optimal_c": 25,
+      "soil_temp_max_c": 40,
+      "note": "Corn needs warm soil. Planting in cold soil leads to slow uneven emergence and increased disease risk. Target soil temperature of 10-12C at seeding depth."
+    },
+
+    "frost": {
+      "foliage_damage_c": -1.0,
+      "foliage_kill_c": -2.0,
+      "tolerance_stage": "none",
+      "note": "Corn seedlings are frost sensitive. Established plants can tolerate brief light frost but emergence through VE stage is most vulnerable."
+    },
+
+    "heat": {
+      "pollen_damage_c": 38,
+      "severe_stress_c": 38,
+      "note": "Corn pollen becomes non-viable above approximately 38C. This is critical during silking (pollination) in July-August. Given Vojvodina now records multiple days above 38C per summer, pollination failure is an increasing risk. This is the most important climate threat to corn in Vojvodina."
+    },
+
+    "optimal": {
+      "day_temp_c": 24,
+      "night_temp_c": 14,
+      "temp_range_c": [18, 28],
+      "note": "Corn is well adapted to Vojvodina conditions historically. The concern is that peak summer temperatures during pollination are now frequently exceeding critical thresholds."
+    },
+
+    "water": {
+      "total_season_mm": 600,
+      "critical_period": "silking and grain fill",
+      "drought_sensitivity": "high",
+      "irrigation_benefit": "very high",
+      "monthly_water_need_mm": {
+        "4": 50,
+        "5": 90,
+        "6": 130,
+        "7": 160,
+        "8": 130,
+        "9": 60
+      },
+      "critical_month_min_rain_mm": {
+        "6": 90,
+        "7": 110,
+        "8": 90
+      },
+      "max_dry_days": {
+        "emergence": 14,
+        "vegetative": 10,
+        "tasseling": 5,
+        "silking": 5,
+        "grain_fill": 7,
+        "maturation": 14
+      },
+      "no_irrigation_risk": "VERY HIGH RISK without irrigation. Corn water need peaks at 160mm in July — nearly three times Vojvodina average of 57mm. Without irrigation in dry years, yield losses of 50% or more are documented. The combination of heat stress during pollination AND drought during grain fill is the critical double threat for rain-fed corn in Vojvodina."
+    },
+
+    "gdd": {
+      "base_temp_c": 10,
+      "maturity_gdd_min": 1800,
+      "maturity_gdd_max": 2800,
+      "note": "FAO 200-300 hybrids (early): ~1800-2000 GDD. FAO 400-500 (medium): ~2200-2500 GDD. FAO 600+ (late): ~2600-2800 GDD. Earlier hybrids are increasingly recommended to escape late-season drought."
+    },
+
+    "maturity": {
+      "early_days": 100,
+      "medium_days": 125,
+      "late_days": 150
+    },
+
+    "traditional_planting": {
+      "earliest": "April 1",
+      "typical_start": "April 15",
+      "typical_end": "May 5",
+      "latest": "May 20",
+      "note": "Traditional Vojvodina planting. Earlier planting dates are increasingly used to shift silking into June before peak heat and before the worst July-August drought."
+    },
+
+    "sources": [
+      "FAO Crop Water Requirements",
+      "USDA Agricultural Research Service",
+      "Maize and Wheat Improvement Center (CIMMYT)",
+      "University of Novi Sad Faculty of Agriculture"
+    ]
+  }
+}
