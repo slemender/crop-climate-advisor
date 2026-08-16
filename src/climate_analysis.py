@@ -290,3 +290,285 @@ spring_df.to_csv("data/processed/last_spring_frosts.csv", index=False)
 
 print("\n\nSummary statistics saved to data/processed/")
 print("\n=== ANALYSIS COMPLETE ===")
+
+
+# -------------------------------------------------------
+# PHASE 7 - CLIMATE TREND ANALYSIS
+# -------------------------------------------------------
+# We investigate whether temperatures in Vojvodina have
+# changed meaningfully over the 44-year period 1981-2024.
+#
+# Tools we use:
+# - scipy.stats.linregress: fits a straight line through data
+# - slope: how much temperature changes per year
+# - p-value: how confident we are the trend is real
+# - r-squared: how well the straight line fits the data
+#
+# IMPORTANT: We will not overstate our conclusions.
+# A trend in 44 years of data is suggestive but cannot
+# tell us exactly what will happen in the future.
+
+from scipy import stats  # statistical functions
+
+print("\n\n" + "=" * 60)
+print("PHASE 7 - CLIMATE TREND ANALYSIS")
+print("=" * 60)
+
+# -------------------------------------------------------
+# STEP 1 - ANNUAL AVERAGE TEMPERATURES
+# -------------------------------------------------------
+# First calculate one average temperature per year.
+# This gives us 44 data points — one per year from
+# 1981 to 2024.
+
+annual_temp = df.groupby("year").agg(
+    avg_temp    = ("temp_avg",  "mean"),
+    avg_max     = ("temp_max",  "mean"),
+    avg_min     = ("temp_min",  "mean"),
+    total_rain  = ("precipitation", "sum"),
+    frost_days  = ("temp_min",  lambda x: (x <= 0).sum()),
+    heat_days   = ("temp_max",  lambda x: (x >= 35).sum()),
+).round(3)
+
+print("\n--- ANNUAL AVERAGES (first and last 5 years) ---\n")
+print(annual_temp.head())
+print("...")
+print(annual_temp.tail())
+
+# -------------------------------------------------------
+# STEP 2 - TEMPERATURE TREND: FULL PERIOD 1981-2024
+# -------------------------------------------------------
+
+print("\n\n--- TEMPERATURE TREND 1981-2024 ---\n")
+
+# linregress needs two lists of numbers
+# x = years (1981, 1982, ..., 2024)
+# y = average temperature for each year
+x = annual_temp.index.values          # years
+y = annual_temp["avg_temp"].values     # temperatures
+
+# Fit the line
+slope, intercept, r_value, p_value, std_err = stats.linregress(x, y)
+
+# How much warming per decade?
+warming_per_decade = slope * 10
+
+print(f"Temperature trend: {slope:.4f}°C per year")
+print(f"                   {warming_per_decade:.3f}°C per decade")
+print(f"R-squared:         {r_value**2:.3f}")
+print(f"P-value:           {p_value:.4f}")
+print(f"Standard error:    {std_err:.4f}")
+
+# Explain what these numbers mean
+print("\n--- WHAT THESE NUMBERS MEAN ---\n")
+
+print(f"Slope: {slope:.4f}°C per year")
+print(f"  → Each year, the average temperature has shifted")
+print(f"    by approximately {slope:.4f}°C")
+print(f"  → Over 10 years that is {warming_per_decade:.2f}°C")
+print(f"  → Over the full 44 years: {slope*44:.2f}°C total shift")
+
+print(f"\nR-squared: {r_value**2:.3f}")
+print(f"  → {r_value**2*100:.1f}% of the year-to-year temperature")
+print(f"    variation is explained by the long-term trend.")
+print(f"  → The remaining {(1-r_value**2)*100:.1f}% is natural variability.")
+
+print(f"\nP-value: {p_value:.4f}")
+if p_value < 0.01:
+    confidence = "very strong — the trend is almost certainly real"
+elif p_value < 0.05:
+    confidence = "strong — the trend is likely real"
+elif p_value < 0.10:
+    confidence = "moderate — the trend is suggestive but uncertain"
+else:
+    confidence = "weak — we cannot confidently claim a real trend"
+print(f"  → Statistical confidence: {confidence}")
+print(f"  → A p-value below 0.05 is the conventional threshold")
+print(f"    for calling a trend statistically significant.")
+
+# -------------------------------------------------------
+# STEP 3 - COMPARE THREE PERIODS
+# -------------------------------------------------------
+# Instead of just fitting a line, let's compare actual
+# average temperatures across three periods:
+#
+# Early period:  1981-1995  (first 15 years)
+# Middle period: 1996-2010  (middle 15 years)
+# Recent period: 2010-2024  (last 15 years)
+#
+# This shows whether warming has been gradual or accelerating.
+
+print("\n\n--- THREE-PERIOD COMPARISON ---\n")
+print("Comparing early, middle, and recent climate periods.\n")
+
+periods = {
+    "Early  (1981-1995)" : (1981, 1995),
+    "Middle (1996-2010)" : (1996, 2010),
+    "Recent (2011-2024)" : (2011, 2024),
+}
+
+period_stats = {}
+
+for period_name, (start, end) in periods.items():
+    period_data = df[
+        (df["year"] >= start) &
+        (df["year"] <= end)
+    ]
+
+    stats_dict = {
+        "avg_temp"    : period_data["temp_avg"].mean(),
+        "avg_max"     : period_data["temp_max"].mean(),
+        "avg_min"     : period_data["temp_min"].mean(),
+        "total_rain"  : period_data["precipitation"].sum() / len(period_data["year"].unique()),
+        "frost_days"  : (period_data["temp_min"] <= 0).sum() / len(period_data["year"].unique()),
+        "heat_days"   : (period_data["temp_max"] >= 35).sum() / len(period_data["year"].unique()),
+    }
+    period_stats[period_name] = stats_dict
+
+    print(f"{period_name}")
+    print(f"  Average temperature:    {stats_dict['avg_temp']:.2f}°C")
+    print(f"  Average daily maximum:  {stats_dict['avg_max']:.2f}°C")
+    print(f"  Average daily minimum:  {stats_dict['avg_min']:.2f}°C")
+    print(f"  Annual rainfall:        {stats_dict['total_rain']:.1f} mm")
+    print(f"  Frost days per year:    {stats_dict['frost_days']:.1f}")
+    print(f"  Heat days per year:     {stats_dict['heat_days']:.1f}")
+    print()
+
+# Calculate the change from early to recent
+early  = period_stats["Early  (1981-1995)"]
+recent = period_stats["Recent (2011-2024)"]
+
+print("--- CHANGE FROM EARLY TO RECENT PERIOD ---\n")
+print(f"Average temperature:  "
+      f"{early['avg_temp']:.2f}°C → {recent['avg_temp']:.2f}°C   "
+      f"(+{recent['avg_temp']-early['avg_temp']:.2f}°C)")
+print(f"Average maximum:      "
+      f"{early['avg_max']:.2f}°C → {recent['avg_max']:.2f}°C   "
+      f"(+{recent['avg_max']-early['avg_max']:.2f}°C)")
+print(f"Average minimum:      "
+      f"{early['avg_min']:.2f}°C → {recent['avg_min']:.2f}°C   "
+      f"(+{recent['avg_min']-early['avg_min']:.2f}°C)")
+print(f"Annual rainfall:      "
+      f"{early['total_rain']:.1f}mm → {recent['total_rain']:.1f}mm   "
+      f"({recent['total_rain']-early['total_rain']:+.1f}mm)")
+print(f"Frost days per year:  "
+      f"{early['frost_days']:.1f} → {recent['frost_days']:.1f}   "
+      f"({recent['frost_days']-early['frost_days']:+.1f} days)")
+print(f"Heat days per year:   "
+      f"{early['heat_days']:.1f} → {recent['heat_days']:.1f}   "
+      f"({recent['heat_days']-early['heat_days']:+.1f} days)")
+
+# -------------------------------------------------------
+# STEP 4 - MONTHLY TREND ANALYSIS
+# -------------------------------------------------------
+# The overall annual trend can hide important seasonal
+# patterns. Some months may be warming faster than others.
+# This matters enormously for planting decisions.
+
+print("\n\n--- WARMING TREND BY MONTH ---\n")
+print("Which months are warming fastest?\n")
+print(f"{'Month':<12} {'Trend':>10} {'Per Decade':>12} {'Confidence':>15}")
+print("-" * 55)
+
+month_trends = {}
+
+for month_num in range(1, 13):
+    month_name = month_names[month_num]
+
+    # Get annual average for this specific month
+    month_data = df[df["month"] == month_num].groupby("year")["temp_avg"].mean()
+
+    x_m = month_data.index.values
+    y_m = month_data.values
+
+    s, i, r, p, se = stats.linregress(x_m, y_m)
+
+    # Confidence label
+    if p < 0.01:
+        conf = "Very strong ✓✓"
+    elif p < 0.05:
+        conf = "Strong ✓"
+    elif p < 0.10:
+        conf = "Moderate ~"
+    else:
+        conf = "Weak ✗"
+
+    month_trends[month_name] = {
+        "slope"   : s,
+        "p_value" : p
+    }
+
+    print(f"{month_name:<12} {s:>+8.4f}°C/yr "
+          f"{s*10:>+8.3f}°C/dec "
+          f"{conf:>15}")
+
+# -------------------------------------------------------
+# STEP 5 - FROST TREND
+# -------------------------------------------------------
+# Are frost days becoming less common over time?
+# This would suggest springs are arriving earlier.
+
+print("\n\n--- FROST DAY TREND ---\n")
+
+frost_by_year = df.groupby("year").apply(
+    lambda x: (x["temp_min"] <= 0).sum()
+).reset_index()
+frost_by_year.columns = ["year", "frost_days"]
+
+x_f = frost_by_year["year"].values
+y_f = frost_by_year["frost_days"].values
+
+s_f, i_f, r_f, p_f, se_f = stats.linregress(x_f, y_f)
+
+print(f"Frost days trend: {s_f:.3f} days per year")
+print(f"                  {s_f*10:.2f} days per decade")
+print(f"P-value:          {p_f:.4f}")
+
+if p_f < 0.05:
+    direction = "decreasing" if s_f < 0 else "increasing"
+    print(f"Conclusion: Frost days are statistically "
+          f"significantly {direction}.")
+else:
+    print(f"Conclusion: No statistically significant trend "
+          f"in frost days detected.")
+
+# -------------------------------------------------------
+# STEP 6 - HEAT DAY TREND
+# -------------------------------------------------------
+
+print("\n--- HEAT DAY TREND ---\n")
+
+heat_by_year = df.groupby("year").apply(
+    lambda x: (x["temp_max"] >= 35).sum()
+).reset_index()
+heat_by_year.columns = ["year", "heat_days"]
+
+x_h = heat_by_year["year"].values
+y_h = heat_by_year["heat_days"].values
+
+s_h, i_h, r_h, p_h, se_h = stats.linregress(x_h, y_h)
+
+print(f"Heat days trend:  {s_h:.3f} days per year")
+print(f"                  {s_h*10:.2f} days per decade")
+print(f"P-value:          {p_h:.4f}")
+
+if p_h < 0.05:
+    direction = "increasing" if s_h > 0 else "decreasing"
+    print(f"Conclusion: Heat days are statistically "
+          f"significantly {direction}.")
+else:
+    print(f"Conclusion: No statistically significant trend "
+          f"in heat days detected.")
+
+# -------------------------------------------------------
+# STEP 7 - SAVE TREND DATA
+# -------------------------------------------------------
+
+annual_temp.to_csv("data/processed/annual_temperature_trends.csv")
+frost_by_year.to_csv("data/processed/frost_days_by_year.csv",
+                     index=False)
+heat_by_year.to_csv("data/processed/heat_days_by_year.csv",
+                    index=False)
+
+print("\n\nTrend data saved to data/processed/")
+print("\n=== TREND ANALYSIS COMPLETE ===")
