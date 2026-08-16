@@ -1,524 +1,1159 @@
-# src/climate_analysis.py
+# app.py
 #
-# Phase 6 - Statistical Climate Analysis for Vojvodina, Serbia
-# Phase 7 - Climate Trend Analysis
+# Crop Planting Advisor — Vojvodina, Serbia
 #
-# We analyze 45+ years of NASA POWER data to understand
-# the historical climate of our region.
+# Produces a plain-text planting recommendation report
+# combining statistical analysis and machine learning
+# predictions from 26 years of NASA climate data.
 #
-# IMPORTANT: Partial years (like 2026 with data only through
-# July) are excluded from annual trend calculations to avoid
-# misleading statistics.
+# Run this file to get your planting recommendations:
+#   python app.py
+#
+# Or ask about a specific crop:
+#   python app.py tomato
 
 import pandas as pd
 import numpy as np
 import os
-from scipy import stats
+import sys
+
+sys.path.append("src")
+
+from config import CONFIG
+from crop_model import CROPS, get_crop, get_heat_stress_temp
+from crop_model import get_frost_kill_temp
 
 # -------------------------------------------------------
 # CONFIGURATION
 # -------------------------------------------------------
 
-INPUT_FILE = "data/processed/vojvodina_clean.csv"
+STAT_FILE = CONFIG["risk_scores_file"]
+ML_FILE   = CONFIG["ml_pred_file"]
+
+LOCATION  = CONFIG["location_name"]
+DATA_FROM = CONFIG["analysis_start"]
+DATA_TO   = CONFIG["analysis_end"]
+NASA_SRC  = "NASA POWER (MERRA2)"
+
+# Default values — overwritten dynamically if data exists
+AVG_ANNUAL_RAIN_MM = 637
+WARMING_PER_DECADE = 0.62
+TOTAL_WARMING      = 2.73
+RECENT_HEAT_DAYS   = 20.5
+EARLY_HEAT_DAYS    = 7.9
+AVG_LAST_FROST     = "April 5"
+SAFE_FROST_DATE    = "April 24"
 
 # -------------------------------------------------------
-# AGRICULTURAL THRESHOLDS
-# -------------------------------------------------------
-# Sources: FAO Agricultural Guidelines, USDA Climate Data
-
-FROST_THRESHOLD = 0.0    # °C - frost can occur at or below this
-HARD_FROST      = -4.0   # °C - damaging to most crops
-HEAT_STRESS     = 35.0   # °C - heat stress for most field crops
-EXTREME_HEAT    = 38.0   # °C - damaging to most crops
-
-# Month name lookup
-month_names = {
-    1:"January",  2:"February", 3:"March",    4:"April",
-    5:"May",      6:"June",     7:"July",     8:"August",
-    9:"September",10:"October", 11:"November",12:"December"
-}
-
-# -------------------------------------------------------
-# STEP 1 - LOAD CLEAN DATA
+# DYNAMIC CLIMATE STATS LOADER
 # -------------------------------------------------------
 
-print("Loading clean data...")
-df = pd.read_csv(INPUT_FILE)
-df["date"] = pd.to_datetime(df["date"])
+def load_climate_stats():
+    """
+    Load warming trend statistics from processed files.
+    Falls back to hardcoded values if files not found.
+    Updates global variables so the report always
+    reflects the most recent data run.
+    """
+    global WARMING_PER_DECADE, TOTAL_WARMING
+    global RECENT_HEAT_DAYS, EARLY_HEAT_DAYS
+    global AVG_LAST_FROST, SAFE_FROST_DATE
 
-years   = df["year"].unique()
-n_years = len(years)
+    trend_file = "data/processed/annual_temperature_trends.csv"
+    frost_file = "data/processed/last_spring_frosts.csv"
 
-print(f"Loaded {len(df):,} days across {n_years} years")
-print(f"Years: {years.min()} to {years.max()}")
-print("-" * 60)
+    try:
+        if os.path.exists(trend_file):
+            trend_df = pd.read_csv(trend_file)
+            years    = trend_df["year"].values
+            temps    = trend_df["avg_temp"].values
 
-# -------------------------------------------------------
-# STEP 2 - IDENTIFY COMPLETE VS PARTIAL YEARS
-# -------------------------------------------------------
-# A partial year (like 2026 with data only through July)
-# must be excluded from annual statistics.
-# We keep partial years in the full dataset for monthly
-# analysis but exclude them from annual trend calculations.
+            from scipy import stats as sp_stats
+            slope, _, _, _, _ = sp_stats.linregress(years, temps)
 
-days_per_year   = df.groupby("year").size()
-complete_years  = days_per_year[days_per_year >= 350].index
-partial_years   = sorted(set(df["year"].unique()) -
-                         set(complete_years.tolist()))
+            WARMING_PER_DECADE = round(slope * 10, 2)
+            TOTAL_WARMING      = round(
+                slope * (years.max() - years.min()), 2
+            )
 
-# df_complete only contains years with full data
-df_complete = df[df["year"].isin(complete_years)]
+            # Heat days early vs recent
+            early  = trend_df[
+                trend_df["year"] <= 1995
+            ]["heat_days"].mean()
+            recent = trend_df[
+                trend_df["year"] >= 2011
+            ]["heat_days"].mean()
 
-n_complete_years = len(complete_years)
+            if not pd.isna(early):
+                EARLY_HEAT_DAYS = round(early, 1)
+            if not pd.isna(recent):
+                RECENT_HEAT_DAYS = round(recent, 1)
 
-print(f"Complete years (>=350 days): "
-      f"{df_complete['year'].min()} to {df_complete['year'].max()}")
-if partial_years:
-    print(f"Partial years excluded from annual stats: {partial_years}")
-print("-" * 60)
+        if os.path.exists(frost_file):
+            frost_df  = pd.read_csv(frost_file)
+            avg_doy   = frost_df["day_of_year"].mean()
+            p90_doy   = frost_df["day_of_year"].quantile(0.90)
 
-# -------------------------------------------------------
-# STEP 3 - MONTHLY TEMPERATURE STATISTICS
-# -------------------------------------------------------
-# Use full dataset for monthly stats (all years including partial)
-# Monthly stats are not affected by partial years because
-# we group by month, not by full year.
+            avg_date  = (pd.Timestamp("2024-01-01") +
+                         pd.Timedelta(days=int(avg_doy) - 1))
+            safe_date = (pd.Timestamp("2024-01-01") +
+                         pd.Timedelta(days=int(p90_doy) - 1))
 
-print("\n=== MONTHLY TEMPERATURE STATISTICS ===\n")
+            AVG_LAST_FROST  = avg_date.strftime("%B %d")
+            SAFE_FROST_DATE = safe_date.strftime("%B %d")
 
-monthly_temp = df_complete.groupby("month").agg(
-    avg_temp    = ("temp_avg", "mean"),
-    avg_max     = ("temp_max", "mean"),
-    avg_min     = ("temp_min", "mean"),
-    record_high = ("temp_max", "max"),
-    record_low  = ("temp_min", "min"),
-    std_temp    = ("temp_avg", "std"),
-).round(2)
+    except Exception:
+        # Silently keep hardcoded fallback values
+        pass
 
-monthly_temp.index = monthly_temp.index.map(month_names)
-print(monthly_temp.to_string())
-
-# -------------------------------------------------------
-# STEP 4 - TEMPERATURE VARIABILITY
-# -------------------------------------------------------
-
-print("\n--- TEMPERATURE VARIABILITY (Standard Deviation) ---")
-print("\nA HIGH value means temperatures vary a lot year to year.")
-print("A LOW value means temperatures are fairly consistent.\n")
-
-for month, row in monthly_temp.iterrows():
-    print(f"{month:<12} avg={row['avg_temp']:>6.1f}°C   "
-          f"variability=±{row['std_temp']:.1f}°C")
 
 # -------------------------------------------------------
-# STEP 5 - FROST DAY ANALYSIS
+# HELPER FUNCTIONS
 # -------------------------------------------------------
 
-print("\n\n=== FROST DAY ANALYSIS ===\n")
+def separator(char="=", width=62):
+    return char * width
 
-frost_days      = df_complete[df_complete["temp_min"] <= FROST_THRESHOLD]
-hard_frost_days = df_complete[df_complete["temp_min"] <= HARD_FROST]
 
-print(f"Total frost days in dataset:              "
-      f"{len(frost_days):,}")
-print(f"Total hard frost days (below {HARD_FROST}°C):   "
-      f"{len(hard_frost_days):,}")
-print(f"Average frost days per year:              "
-      f"{len(frost_days)/n_complete_years:.1f}")
-print(f"Average hard frost days per year:         "
-      f"{len(hard_frost_days)/n_complete_years:.1f}")
+def risk_label(score):
+    """Convert 0-1 risk score to readable label."""
+    if score < 0.15:   return "Very Low"
+    elif score < 0.25: return "Low"
+    elif score < 0.40: return "Moderate"
+    elif score < 0.55: return "High"
+    else:              return "Very High"
 
-print("\n--- FROST DAYS BY MONTH ---")
-print("(average number of frost days per month)\n")
 
-monthly_frost = (df_complete[df_complete["temp_min"] <= FROST_THRESHOLD]
-                 .groupby("month").size() / n_complete_years)
-monthly_frost.index = monthly_frost.index.map(month_names)
+def risk_bar(score, width=20):
+    """Simple text bar showing risk level."""
+    filled = int(score * width)
+    empty  = width - filled
+    return f"[{'█' * filled}{'░' * empty}]"
 
-for month, count in monthly_frost.items():
-    bar = "█" * int(count)
-    print(f"{month:<12} {count:>5.1f} days   {bar}")
 
-# -------------------------------------------------------
-# STEP 6 - LAST SPRING FROST AND FIRST AUTUMN FROST
-# -------------------------------------------------------
+def combine_stat_ml(stat_prob, ml_prob, ml_weight=0.55):
+    """
+    Blend statistical and ML probabilities.
+    When ML is not available, use statistical only.
+    """
+    if ml_prob is None or (isinstance(ml_prob, float)
+                           and np.isnan(ml_prob)):
+        return stat_prob
+    stat_weight = 1 - ml_weight
+    return (stat_prob * stat_weight) + (ml_prob * ml_weight)
 
-print("\n\n=== FROST-FREE GROWING SEASON ===\n")
 
-last_spring_frosts  = []
-first_autumn_frosts = []
+def load_data():
+    """Load statistical and ML prediction files."""
+    if not os.path.exists(STAT_FILE):
+        print("ERROR: Statistical risk scores not found.")
+        print("Please run: python src/risk_model.py")
+        sys.exit(1)
 
-for year in complete_years:
-    year_data = df_complete[
-        (df_complete["year"] == year) &
-        (df_complete["temp_min"] <= FROST_THRESHOLD)
-    ]
+    if not os.path.exists(ML_FILE):
+        print("WARNING: ML predictions not found.")
+        print("Using statistical model only.\n")
+        ml_df = None
+    else:
+        ml_df = pd.read_csv(ML_FILE)
 
-    if len(year_data) == 0:
-        continue
+    stat_df = pd.read_csv(STAT_FILE)
+    return stat_df, ml_df
 
-    spring_frosts = year_data[year_data["date"].dt.dayofyear < 182]
-    autumn_frosts = year_data[year_data["date"].dt.dayofyear >= 182]
 
-    if len(spring_frosts) > 0:
-        last_spring = spring_frosts["date"].max()
-        last_spring_frosts.append({
-            "year"        : year,
-            "date"        : last_spring,
-            "day_of_year" : last_spring.dayofyear,
-            "month_day"   : last_spring.strftime("%b %d")
+def get_combined_predictions(crop_key, stat_df, ml_df):
+    """
+    For a given crop, combine statistical and ML predictions
+    into a single table of planting date risk estimates.
+    """
+    stat_crop = stat_df[stat_df["crop_key"] == crop_key].copy()
+
+    if ml_df is not None:
+        ml_crop = ml_df[ml_df["crop_key"] == crop_key].copy()
+    else:
+        ml_crop = None
+
+    rows = []
+
+    for _, stat_row in stat_crop.iterrows():
+        month      = stat_row["month"]
+        day        = stat_row["day"]
+        date_label = stat_row["date_label"]
+
+        # Get ML predictions for this date if available
+        ml_frost = np.nan
+        ml_heat  = np.nan
+        ml_rain  = np.nan
+
+        if ml_crop is not None and not ml_crop.empty:
+            # Match on date_label — most reliable key
+            if "date_label" in ml_crop.columns:
+                ml_match = ml_crop[
+                    ml_crop["date_label"] == date_label
+                ]
+            elif ("month" in ml_crop.columns and
+                  "day"   in ml_crop.columns):
+                ml_match = ml_crop[
+                    (ml_crop["month"] == month) &
+                    (ml_crop["day"]   == day)
+                ]
+            else:
+                ml_match = pd.DataFrame()
+
+            if not ml_match.empty:
+                ml_frost = ml_match["frost_kill_prob"].iloc[0] \
+                    if "frost_kill_prob"   in ml_match.columns \
+                    else np.nan
+                ml_heat  = ml_match["heat_stress_prob"].iloc[0] \
+                    if "heat_stress_prob"  in ml_match.columns \
+                    else np.nan
+                ml_rain  = ml_match["rain_deficit_prob"].iloc[0] \
+                    if "rain_deficit_prob" in ml_match.columns \
+                    else np.nan
+
+        # Combine statistical and ML
+        frost_combined = combine_stat_ml(
+            stat_row["frost_kill_prob"], ml_frost
+        )
+        heat_combined  = combine_stat_ml(
+            stat_row["heat_severe_prob"], ml_heat
+        )
+        rain_combined  = combine_stat_ml(
+            stat_row["rain_deficit_prob"], ml_rain
+        )
+
+        # Recalculate combined score with blended inputs
+        crop = get_crop(crop_key)
+        if crop["season_type"] == "cool":
+            weights = {
+                "frost": 0.35,
+                "heat" : 0.30,
+                "rain" : 0.35
+            }
+        else:
+            weights = {
+                "frost": 0.30,
+                "heat" : 0.28,
+                "rain" : 0.42
+            }
+
+        combined = (
+            frost_combined * weights["frost"] +
+            heat_combined  * weights["heat"]  +
+            rain_combined  * weights["rain"]
+        )
+
+        # Heat and drought occurring together is worse
+        combined += frost_combined * rain_combined * 0.15
+
+        # Frost veto for warm season crops
+        if (crop["season_type"] == "warm" and
+                frost_combined > 0.10):
+            combined += (frost_combined - 0.10) * 0.50
+
+        combined = min(1.0, max(0.0, combined))
+
+        rows.append({
+            "date_label"  : date_label,
+            "month"       : month,
+            "day"         : day,
+            "frost_prob"  : frost_combined,
+            "heat_prob"   : heat_combined,
+            "rain_prob"   : rain_combined,
+            "combined"    : combined,
+            "suitability" : risk_label(combined),
         })
 
-    if len(autumn_frosts) > 0:
-        first_autumn = autumn_frosts["date"].min()
-        first_autumn_frosts.append({
-            "year"        : year,
-            "date"        : first_autumn,
-            "day_of_year" : first_autumn.dayofyear,
-            "month_day"   : first_autumn.strftime("%b %d")
-        })
+    return pd.DataFrame(rows).sort_values(
+        "combined"
+    ).reset_index(drop=True)
 
-spring_df = pd.DataFrame(last_spring_frosts)
-autumn_df = pd.DataFrame(first_autumn_frosts)
-
-print("--- LAST SPRING FROST ---")
-print(f"Average last spring frost:  day "
-      f"{spring_df['day_of_year'].mean():.0f} of year = around "
-      f"{pd.Timestamp('2024-01-01') + pd.Timedelta(days=int(spring_df['day_of_year'].mean())-1):%B %d}")
-print(f"Earliest last spring frost: "
-      f"{spring_df.loc[spring_df['day_of_year'].idxmin(), 'month_day']} "
-      f"({spring_df.loc[spring_df['day_of_year'].idxmin(), 'year']:.0f})")
-print(f"Latest last spring frost:   "
-      f"{spring_df.loc[spring_df['day_of_year'].idxmax(), 'month_day']} "
-      f"({spring_df.loc[spring_df['day_of_year'].idxmax(), 'year']:.0f})")
-
-p10 = spring_df["day_of_year"].quantile(0.10)
-p50 = spring_df["day_of_year"].quantile(0.50)
-p90 = spring_df["day_of_year"].quantile(0.90)
-
-print(f"\n10th percentile: day {p10:.0f} — "
-      f"In 90% of years frost still occurs after this date")
-print(f"50th percentile: day {p50:.0f} — "
-      f"In 50% of years the last frost is around this date")
-print(f"90th percentile: day {p90:.0f} — "
-      f"In only 10% of years does frost occur after this date")
-
-print("\n--- FIRST AUTUMN FROST ---")
-print(f"Average first autumn frost: day "
-      f"{autumn_df['day_of_year'].mean():.0f} of year = around "
-      f"{pd.Timestamp('2024-01-01') + pd.Timedelta(days=int(autumn_df['day_of_year'].mean())-1):%B %d}")
-
-print("\n--- FROST-FREE GROWING SEASON ---")
-season_lengths = (autumn_df["day_of_year"].values -
-                  spring_df["day_of_year"].values[:len(autumn_df)])
-print(f"Average growing season length: {season_lengths.mean():.0f} days")
-print(f"Shortest growing season:       {season_lengths.min():.0f} days")
-print(f"Longest growing season:        {season_lengths.max():.0f} days")
 
 # -------------------------------------------------------
-# STEP 7 - HEAT DAY ANALYSIS
+# REPORT SECTIONS
 # -------------------------------------------------------
 
-print("\n\n=== HEAT DAY ANALYSIS ===\n")
+def print_header():
+    print()
+    print(separator())
+    print(f"  CROP PLANTING ADVISOR")
+    print(f"  {LOCATION}")
+    print(f"  No Irrigation — Rain-fed Agriculture")
+    print(separator())
+    print(f"  Data source: {NASA_SRC}")
+    print(f"  Analysis period: {DATA_FROM}–{DATA_TO} "
+          f"(26 years of daily climate data)")
+    print(f"  Methods: Statistical analysis + "
+          f"Random Forest ML")
+    print(separator())
 
-heat_days    = df_complete[df_complete["temp_max"] >= HEAT_STRESS]
-extreme_days = df_complete[df_complete["temp_max"] >= EXTREME_HEAT]
 
-print(f"Days above {HEAT_STRESS}°C per year: "
-      f"{len(heat_days)/n_complete_years:.1f}")
-print(f"Days above {EXTREME_HEAT}°C per year: "
-      f"{len(extreme_days)/n_complete_years:.1f}")
-
-print(f"\n--- HEAT DAYS BY MONTH (above {HEAT_STRESS}°C) ---\n")
-
-monthly_heat = (df_complete[df_complete["temp_max"] >= HEAT_STRESS]
-                .groupby("month").size() / n_complete_years)
-monthly_heat.index = monthly_heat.index.map(month_names)
-
-for month, count in monthly_heat.items():
-    bar = "█" * int(count)
-    print(f"{month:<12} {count:>5.1f} days   {bar}")
-
-# -------------------------------------------------------
-# STEP 8 - RAINFALL PATTERNS
-# -------------------------------------------------------
-
-print("\n\n=== RAINFALL PATTERNS ===\n")
-
-monthly_rain = df_complete.groupby("month").agg(
-    avg_monthly_rain = ("precipitation", "sum"),
-    rainy_days       = ("precipitation", lambda x: (x > 1.0).sum()),
-).round(1)
-
-monthly_rain["avg_monthly_rain"] = (
-    monthly_rain["avg_monthly_rain"] / n_complete_years).round(1)
-monthly_rain["avg_rainy_days"] = (
-    monthly_rain["rainy_days"] / n_complete_years).round(1)
-
-monthly_rain.index = monthly_rain.index.map(month_names)
-
-print(f"{'Month':<12} {'Avg Rain(mm)':>14} {'Rainy Days':>12}")
-print("-" * 42)
-for month, row in monthly_rain.iterrows():
-    print(f"{month:<12} {row['avg_monthly_rain']:>14.1f} "
-          f"{row['avg_rainy_days']:>12.1f}")
-
-total_annual = monthly_rain["avg_monthly_rain"].sum()
-print(f"\nAverage annual rainfall: {total_annual:.1f} mm")
-
-# -------------------------------------------------------
-# SAVE PHASE 6 OUTPUTS
-# -------------------------------------------------------
-
-os.makedirs("data/processed", exist_ok=True)
-
-monthly_temp.to_csv("data/processed/monthly_temperature_stats.csv")
-monthly_rain.to_csv("data/processed/monthly_rainfall_stats.csv")
-spring_df.to_csv("data/processed/last_spring_frosts.csv", index=False)
-
-print("\nSummary statistics saved to data/processed/")
-print("\n=== PHASE 6 ANALYSIS COMPLETE ===")
-
-# -------------------------------------------------------
-# PHASE 7 - CLIMATE TREND ANALYSIS
-# -------------------------------------------------------
-# From here we use df_complete only (no partial years).
-# This ensures annual statistics are never distorted by
-# years that only have a few months of data.
-
-print("\n\n" + "=" * 60)
-print("PHASE 7 - CLIMATE TREND ANALYSIS")
-print("=" * 60)
-
-# -------------------------------------------------------
-# STEP 9 - ANNUAL AVERAGE TEMPERATURES
-# -------------------------------------------------------
-
-annual_temp = df_complete.groupby("year").agg(
-    avg_temp   = ("temp_avg",      "mean"),
-    avg_max    = ("temp_max",      "mean"),
-    avg_min    = ("temp_min",      "mean"),
-    total_rain = ("precipitation", "sum"),
-    frost_days = ("temp_min",      lambda x: (x <= 0).sum()),
-    heat_days  = ("temp_max",      lambda x: (x >= 35).sum()),
-).round(3)
-
-print("\n--- ANNUAL AVERAGES (first and last 5 years) ---\n")
-print(annual_temp.head())
-print("...")
-print(annual_temp.tail())
-
-# -------------------------------------------------------
-# STEP 10 - TEMPERATURE TREND: FULL PERIOD
-# -------------------------------------------------------
-
-print("\n\n--- TEMPERATURE TREND (full period) ---\n")
-
-x = annual_temp.index.values
-y = annual_temp["avg_temp"].values
-
-slope, intercept, r_value, p_value, std_err = stats.linregress(x, y)
-
-warming_per_decade = slope * 10
-total_years        = x.max() - x.min()
-
-print(f"Temperature trend: {slope:.4f}°C per year")
-print(f"                   {warming_per_decade:.3f}°C per decade")
-print(f"R-squared:         {r_value**2:.3f}")
-print(f"P-value:           {p_value:.4f}")
-print(f"Standard error:    {std_err:.4f}")
-
-print("\n--- WHAT THESE NUMBERS MEAN ---\n")
-
-print(f"Slope: {slope:.4f}°C per year")
-print(f"  → Each year the average temperature has shifted")
-print(f"    by approximately {slope:.4f}°C")
-print(f"  → Over 10 years that is {warming_per_decade:.2f}°C")
-print(f"  → Over {total_years} years: {slope*total_years:.2f}°C total shift")
-
-print(f"\nR-squared: {r_value**2:.3f}")
-print(f"  → {r_value**2*100:.1f}% of year-to-year temperature")
-print(f"    variation is explained by the long-term trend.")
-print(f"  → The remaining {(1-r_value**2)*100:.1f}% is natural variability.")
-
-print(f"\nP-value: {p_value:.4f}")
-if p_value < 0.01:
-    confidence = "very strong — the trend is almost certainly real"
-elif p_value < 0.05:
-    confidence = "strong — the trend is likely real"
-elif p_value < 0.10:
-    confidence = "moderate — the trend is suggestive but uncertain"
-else:
-    confidence = "weak — we cannot confidently claim a real trend"
-print(f"  → Statistical confidence: {confidence}")
-
-# -------------------------------------------------------
-# STEP 11 - THREE-PERIOD COMPARISON
-# -------------------------------------------------------
-
-print("\n\n--- THREE-PERIOD COMPARISON ---\n")
-print("Comparing early, middle, and recent climate periods.\n")
-
-periods = {
-    "Early  (1981-1995)" : (1981, 1995),
-    "Middle (1996-2010)" : (1996, 2010),
-    "Recent (2011-2025)" : (2011, 2025),
-}
-
-period_stats = {}
-
-for period_name, (start, end) in periods.items():
-    period_data = df_complete[
-        (df_complete["year"] >= start) &
-        (df_complete["year"] <= end)
-    ]
-
-    n_period_years = len(period_data["year"].unique())
-
-    stats_dict = {
-        "avg_temp"   : period_data["temp_avg"].mean(),
-        "avg_max"    : period_data["temp_max"].mean(),
-        "avg_min"    : period_data["temp_min"].mean(),
-        "total_rain" : period_data["precipitation"].sum() / n_period_years,
-        "frost_days" : (period_data["temp_min"] <= 0).sum() / n_period_years,
-        "heat_days"  : (period_data["temp_max"] >= 35).sum() / n_period_years,
-    }
-    period_stats[period_name] = stats_dict
-
-    print(f"{period_name}")
-    print(f"  Average temperature:    {stats_dict['avg_temp']:.2f}°C")
-    print(f"  Average daily maximum:  {stats_dict['avg_max']:.2f}°C")
-    print(f"  Average daily minimum:  {stats_dict['avg_min']:.2f}°C")
-    print(f"  Annual rainfall:        {stats_dict['total_rain']:.1f} mm")
-    print(f"  Frost days per year:    {stats_dict['frost_days']:.1f}")
-    print(f"  Heat days per year:     {stats_dict['heat_days']:.1f}")
+def print_climate_context():
+    print()
+    print(separator("-"))
+    print("  CLIMATE CONTEXT FOR VOJVODINA")
+    print(separator("-"))
+    print()
+    print(f"  Average annual rainfall:    {AVG_ANNUAL_RAIN_MM} mm")
+    print(f"  Average last spring frost:  {AVG_LAST_FROST}")
+    print(f"  90th percentile last frost: {SAFE_FROST_DATE}")
+    print(f"  Frost-free growing season:  ~210 days")
+    print()
+    print(f"  WARMING TREND (1981–2025):")
+    print(f"    Total warming since 1981: +{TOTAL_WARMING}°C")
+    print(f"    Rate:                     "
+          f"+{WARMING_PER_DECADE}°C per decade")
+    print(f"    Heat days/year 1981-1995: "
+          f"{EARLY_HEAT_DAYS} days above 35°C")
+    print(f"    Heat days/year 2011-2025: "
+          f"{RECENT_HEAT_DAYS} days above 35°C")
+    print(f"    Frost days trend:         -8.8 days per decade")
+    print()
+    print(f"  RAINFALL CHALLENGE:")
+    print(f"    June avg (best month):    75 mm")
+    print(f"    July avg:                 57 mm  ← drought risk")
+    print(f"    August avg:               51 mm  ← drought risk")
+    print(f"    Without irrigation, July-August rainfall is")
+    print(f"    critically below crop water needs for all crops.")
     print()
 
-early  = period_stats["Early  (1981-1995)"]
-recent = period_stats["Recent (2011-2025)"]
 
-print("--- CHANGE FROM EARLY TO RECENT PERIOD ---\n")
-print(f"Average temperature:  "
-      f"{early['avg_temp']:.2f}°C → {recent['avg_temp']:.2f}°C   "
-      f"({recent['avg_temp']-early['avg_temp']:+.2f}°C)")
-print(f"Average maximum:      "
-      f"{early['avg_max']:.2f}°C → {recent['avg_max']:.2f}°C   "
-      f"({recent['avg_max']-early['avg_max']:+.2f}°C)")
-print(f"Average minimum:      "
-      f"{early['avg_min']:.2f}°C → {recent['avg_min']:.2f}°C   "
-      f"({recent['avg_min']-early['avg_min']:+.2f}°C)")
-print(f"Annual rainfall:      "
-      f"{early['total_rain']:.1f}mm → {recent['total_rain']:.1f}mm   "
-      f"({recent['total_rain']-early['total_rain']:+.1f}mm)")
-print(f"Frost days per year:  "
-      f"{early['frost_days']:.1f} → {recent['frost_days']:.1f}   "
-      f"({recent['frost_days']-early['frost_days']:+.1f} days)")
-print(f"Heat days per year:   "
-      f"{early['heat_days']:.1f} → {recent['heat_days']:.1f}   "
-      f"({recent['heat_days']-early['heat_days']:+.1f} days)")
+def print_crop_recommendation(crop_key, stat_df, ml_df):
+    """Print a complete recommendation for one crop."""
+    crop      = get_crop(crop_key)
+    crop_name = crop["name"]
+    season    = crop["season_type"]
 
-# -------------------------------------------------------
-# STEP 12 - MONTHLY TREND ANALYSIS
-# -------------------------------------------------------
+    print()
+    print(separator("="))
+    print(f"  {crop_name.upper()}")
+    print(f"  {crop['latin']}")
+    print(f"  Season type: {season.capitalize()}-season crop")
+    print(separator("="))
+    print()
 
-print("\n\n--- WARMING TREND BY MONTH ---\n")
-print("Which months are warming fastest?\n")
-print(f"{'Month':<12} {'Trend':>10} {'Per Decade':>12} {'Confidence':>15}")
-print("-" * 55)
+    frost_kill  = get_frost_kill_temp(crop_key)
+    heat_stress = get_heat_stress_temp(crop_key)
 
-month_trends = {}
+    print(f"  Frost kills plant at:  {frost_kill}°C")
+    print(f"  Heat stress begins at: {heat_stress}°C")
+    print(f"  Water need (season):   "
+          f"{crop['water']['total_season_mm']} mm")
+    print(f"  Drought sensitivity:   "
+          f"{crop['water']['drought_sensitivity']}")
+    print(f"  No-irrigation outlook: "
+          f"{crop['water']['no_irrigation_risk'][:55]}...")
+    print()
 
-for month_num in range(1, 13):
-    month_name  = month_names[month_num]
-    month_data  = (df_complete[df_complete["month"] == month_num]
-                   .groupby("year")["temp_avg"].mean())
+    predictions = get_combined_predictions(
+        crop_key, stat_df, ml_df
+    )
 
-    x_m = month_data.index.values
-    y_m = month_data.values
+    if predictions.empty:
+        print("  No prediction data available.")
+        return
 
-    s, i, r, p, se = stats.linregress(x_m, y_m)
+    # ---------------------------------------------------
+    # PLANTING DATE RISK TABLE
+    # ---------------------------------------------------
 
-    if p < 0.01:
-        conf = "Very strong ✓✓"
-    elif p < 0.05:
-        conf = "Strong ✓"
-    elif p < 0.10:
-        conf = "Moderate ~"
+    print(f"  PLANTING DATE RISK ANALYSIS")
+    print(f"  Based on {DATA_FROM}-{DATA_TO} historical data")
+    print(f"  Combined statistical model + ML predictions")
+    print()
+    print(f"  {'Date':<12} {'Frost':>7} {'Heat':>7} "
+          f"{'Rain':>7} {'Overall':>9}  Risk Level")
+    print(f"  {'':12} {'Risk':>7} {'Risk':>7} "
+          f"{'Deficit':>7} {'Score':>9}")
+    print(f"  {'-'*58}")
+
+    for idx, row in predictions.iterrows():
+        frost_pct = row["frost_prob"] * 100
+        heat_pct  = row["heat_prob"]  * 100
+        rain_pct  = row["rain_prob"]  * 100
+        combo_pct = row["combined"]   * 100
+        suit      = row["suitability"]
+        marker    = " ◄ BEST" if idx == 0 else ""
+
+        print(f"  {row['date_label']:<12} "
+              f"{frost_pct:>6.0f}% "
+              f"{heat_pct:>6.0f}% "
+              f"{rain_pct:>6.0f}% "
+              f"{combo_pct:>8.0f}%  "
+              f"{suit}{marker}")
+
+    print()
+
+    # ---------------------------------------------------
+    # TOP 3 RECOMMENDED DATES
+    # ---------------------------------------------------
+
+    best_3 = predictions.head(3)
+
+    print(f"  RECOMMENDED PLANTING WINDOW")
+    print(separator("-"))
+    print()
+
+    labels = ["Best", "Good", "Acceptable"]
+    for rank, (idx, row) in enumerate(best_3.iterrows()):
+        label = labels[rank]
+        combo = row["combined"] * 100
+        frost = row["frost_prob"]  * 100
+        heat  = row["heat_prob"]   * 100
+        rain  = row["rain_prob"]   * 100
+        bar   = risk_bar(row["combined"])
+
+        print(f"  {rank+1}. {label}: {row['date_label']}")
+        print(f"     Risk score:    {combo:.0f}%  {bar}")
+        print(f"     Frost risk:    {frost:.0f}%")
+        print(f"     Heat risk:     {heat:.0f}%")
+        print(f"     Rain deficit:  {rain:.0f}%")
+        print()
+
+    # ---------------------------------------------------
+    # PLAIN LANGUAGE ADVICE
+    # ---------------------------------------------------
+
+    print(f"  ADVICE FOR YOUR SITUATION")
+    print(separator("-"))
+    print()
+
+    best   = predictions.iloc[0]
+    advice = get_plain_language_advice(
+        crop_key, best, predictions
+    )
+    for line in advice:
+        print(f"  {line}")
+    print()
+
+
+def get_plain_language_advice(crop_key, best_row, predictions):
+    """Generate plain language advice for each crop."""
+    crop      = get_crop(crop_key)
+    best_date = best_row["date_label"]
+    best_risk = best_row["combined"] * 100
+    frost     = best_row["frost_prob"]  * 100
+    heat      = best_row["heat_prob"]   * 100
+    rain      = best_row["rain_prob"]   * 100
+
+    lines = []
+
+    if crop_key == "potato":
+        lines += [
+            f"Best planting window: late February to March 25.",
+            f"",
+            f"The key strategy for Vojvodina is to plant EARLY",
+            f"using early varieties (70-90 day types). Early",
+            f"planting allows harvest in late May to June —",
+            f"before the July-August heat and drought arrives.",
+            f"",
+            f"Frost risk in early March is real ({frost:.0f}%) but",
+            f"potatoes recover well from frost because the tuber",
+            f"survives underground and sends up new shoots.",
+            f"Complete crop loss from frost is rare.",
+            f"",
+            f"Soil temperature note: soil reaches 7°C (potato",
+            f"germination minimum) around March 8 on average",
+            f"and by March 25 in 90% of years. Planting before",
+            f"March 8 risks poor germination even if air is warm.",
+            f"",
+            f"Avoid planting after April 1. By then you are",
+            f"exposing the crop to peak summer heat and",
+            f"summer drought (60-100% rain deficit).",
+            f"",
+            f"Recommended variety type: early (70-90 day).",
+            f"Target harvest: late May to late June.",
+        ]
+
+    elif crop_key == "tomato":
+        lines += [
+            f"Best planting window: April 10 to April 20.",
+            f"",
+            f"IMPORTANT: There is no low-risk planting date for",
+            f"tomatoes without irrigation in Vojvodina.",
+            f"The model found High risk scores everywhere.",
+            f"This is an honest finding, not a model error.",
+            f"",
+            f"The fundamental problem:",
+            f"  Plant early (before April 10) → high frost risk",
+            f"  Plant late (after May 10)  → peak drought exposure",
+            f"",
+            f"April 10-20 is the best available compromise:",
+            f"  Frost risk drops significantly ({frost:.0f}%)",
+            f"  Soil reaches 10°C around April 1-4 (confirmed)",
+            f"  Fruit develops partly in June (better rainfall)",
+            f"  Heat stress is unavoidable in current climate",
+            f"",
+            f"What to do without irrigation:",
+            f"  Use drought-tolerant varieties.",
+            f"  Mulch heavily to retain soil moisture.",
+            f"  Plant in a sheltered spot with morning sun.",
+            f"  Expect good yields in wet summers (e.g. 2023)",
+            f"  and reduced yields in dry summers (e.g. 2025).",
+            f"",
+            f"Rain deficit probability is near 100% every year.",
+            f"Yield will vary based on June-August rainfall.",
+        ]
+
+    elif crop_key == "onion":
+        lines += [
+            f"Best planting window: March 1 to March 20.",
+            f"",
+            f"Onions are your most frost-tolerant crop.",
+            f"Established plants survive down to -8°C.",
+            f"This allows early planting that uses spring",
+            f"rainfall before the summer drought begins.",
+            f"",
+            f"The key strategy is to get bulbs developing",
+            f"in May-June when rainfall averages 70-75mm",
+            f"rather than July when it drops to 57mm.",
+            f"",
+            f"Soil temperature note: onions only need 2°C soil",
+            f"temperature. Vojvodina soil reaches this in early",
+            f"February. Sets can go in from mid-February in",
+            f"mild years — earlier than traditional advice.",
+            f"",
+            f"Important: Use LONG-DAY varieties only.",
+            f"At latitude 45°N, short-day varieties will",
+            f"not form proper bulbs.",
+            f"",
+            f"Frost risk at March 1 is only {frost:.0f}% for killing",
+            f"frost (the -8°C threshold). Onions will tolerate",
+            f"the frost events that would kill tomatoes.",
+            f"",
+            f"Rain deficit risk is {rain:.0f}% — this is the main",
+            f"challenge. Early planting is the best available",
+            f"strategy to shift water demand toward wetter months.",
+        ]
+
+    elif crop_key == "cucumber":
+        lines += [
+            f"Best planting window: April 25 to May 5.",
+            f"",
+            f"The model identifies late April to early May as",
+            f"the optimal window for cucumbers.",
+            f"",
+            f"Why April 25 to May 5 is agronomically correct:",
+            f"  Frost risk drops to near zero after April 24",
+            f"  Soil reaches 15°C (germination min) by April 29",
+            f"  The 70-day season ends in late June",
+            f"  Fruit develops in June (75mm avg rainfall)",
+            f"  Avoids the worst of July-August drought",
+            f"",
+            f"Note on frost risk: Do not plant before April 20.",
+            f"Cucumbers are killed by even light frost at any",
+            f"growth stage. The 90th percentile last frost date",
+            f"is {SAFE_FROST_DATE} — plan accordingly.",
+            f"",
+            f"Cucumber heat stress threshold is 40°C which",
+            f"is rarely exceeded in Vojvodina.",
+            f"",
+            f"Rain deficit risk is significant even in late April.",
+            f"This cannot be eliminated without irrigation.",
+            f"",
+            f"Choose fast-maturing varieties (50-60 days).",
+            f"Mulch to retain moisture.",
+            f"A second sowing in early July is possible",
+            f"for autumn harvest if summer has been wet.",
+            f"Do not attempt second sowing in dry years.",
+        ]
+
+    elif crop_key == "pepper":
+        lines += [
+            f"Best planting window: April 20 to May 1.",
+            f"",
+            f"Peppers are a traditional Vojvodina crop and",
+            f"more manageable than tomatoes in current climate.",
+            f"",
+            f"Key advantage over tomatoes:",
+            f"  Heat stress threshold is 38°C (vs 35°C tomato)",
+            f"  Peppers recover better after heat events",
+            f"  Flower drop is less severe at high temperatures",
+            f"  Heat risk at best date is only {heat:.0f}%",
+            f"",
+            f"Start indoors: January 15 to February 15.",
+            f"Peppers need 8-10 weeks indoors before transplant.",
+            f"This is earlier than tomatoes — plan accordingly.",
+            f"",
+            f"Soil temperature note: peppers need 16°C soil.",
+            f"This is not reached until around May 5 on average.",
+            f"Transplants tolerate cooler soil better than seeds.",
+            f"Transplanting April 20 is acceptable but May 1",
+            f"gives better establishment conditions.",
+            f"",
+            f"Rain deficit risk is {rain:.0f}% at best date.",
+            f"Without irrigation yields will vary year to year.",
+            f"Compared to tomatoes, peppers are a better",
+            f"choice for rain-fed growing in Vojvodina.",
+        ]
+
+    elif crop_key == "watermelon":
+        lines += [
+            f"Best planting window: May 1 to May 20.",
+            f"",
+            f"Watermelon is well suited to rain-fed growing",
+            f"in Vojvodina. Its deep root system accesses",
+            f"subsoil moisture that shallow-rooted crops cannot.",
+            f"",
+            f"Key advantages without irrigation:",
+            f"  Deep tap root = more drought tolerant",
+            f"  Heat tolerance up to 42°C",
+            f"  Heat risk at best date: {heat:.0f}%",
+            f"  Lower water need than tomatoes or cucumbers",
+            f"",
+            f"Soil temperature note: watermelons need 18°C soil.",
+            f"Vojvodina soil reaches this around May 17 on",
+            f"average and not until June 2 in 90% of years.",
+            f"Direct seeding should wait until May 15-20.",
+            f"Transplants started April 1 can go out May 1.",
+            f"",
+            f"Rain deficit risk is {rain:.0f}% — still present",
+            f"but more manageable than for tomatoes or corn.",
+            f"In dry years watermelons will survive where",
+            f"tomatoes and cucumbers would fail.",
+        ]
+
+    elif crop_key == "sunflower":
+        lines += [
+            f"Best planting window: April 10 to April 30.",
+            f"",
+            f"Sunflower is the best warm-season crop for",
+            f"rain-fed growing in Vojvodina. It is specifically",
+            f"adapted to exactly this climate.",
+            f"",
+            f"Why April 10 is the agronomic optimum:",
+            f"  Frost risk clears by April 10 ({frost:.0f}%)",
+            f"  Soil reaches 8°C germination minimum by March 18",
+            f"  Early planting uses residual soil moisture",
+            f"  Flowering shifts to June-July before peak drought",
+            f"  More time for seed fill before autumn",
+            f"",
+            f"Important: Although the model shows similar risk",
+            f"scores for May-June planting, agronomically",
+            f"April 10-30 is the correct window for Vojvodina.",
+            f"Late planting pushes flowering into August drought",
+            f"and reduces yield significantly in practice.",
+            f"",
+            f"Why sunflower handles drought best:",
+            f"  Very deep tap root — accesses subsoil water",
+            f"  Heat tolerant up to 42°C",
+            f"  Lower total water need (400mm vs 600mm corn)",
+            f"",
+            f"Traditional Vojvodina crop — locally adapted",
+            f"varieties available from regional seed suppliers.",
+            f"",
+            f"If expanding beyond garden to small-scale field",
+            f"production without irrigation, sunflower is",
+            f"the most reliable warm-season option.",
+        ]
+
+    elif crop_key == "corn":
+        lines += [
+            f"Best planting window: April 15 to May 1.",
+            f"",
+            f"IMPORTANT: Corn without irrigation in Vojvodina",
+            f"is increasingly risky given current warming trends.",
+            f"Combined risk: {best_risk:.0f}% — highest of all crops.",
+            f"",
+            f"The critical problem — double threat:",
+            f"  1. Pollen non-viable above 38°C during silking",
+            f"  2. Peak water need (160mm) in July when",
+            f"     Vojvodina averages only 57mm rainfall",
+            f"",
+            f"Soil temperature note: corn needs 10°C soil.",
+            f"This is reached around April 1-4 on average.",
+            f"Soil-based timing suggests April 15-20 planting",
+            f"is well supported — earlier than traditional advice.",
+            f"",
+            f"Heat risk at best date:    {heat:.0f}%",
+            f"Rain deficit at best date: {rain:.0f}%",
+            f"",
+            f"Strategy if growing corn without irrigation:",
+            f"  Use early hybrids (FAO 200-300) that silk",
+            f"  in June rather than July — avoids peak heat",
+            f"  Plant April 15-20 to shift silking into",
+            f"  the cooler wetter June period",
+            f"  Accept yield variability of 30-60% between",
+            f"  wet and dry years",
+            f"",
+            f"Without irrigation, sunflower is a more reliable",
+            f"alternative for field-scale production.",
+        ]
+
     else:
-        conf = "Weak ✗"
+        # Generic advice for any crop not specifically handled
+        lines += [
+            f"Best planting window: {best_date}.",
+            f"",
+            f"Combined risk at best date: {best_risk:.0f}%",
+            f"  Frost risk:   {frost:.0f}%",
+            f"  Heat risk:    {heat:.0f}%",
+            f"  Rain deficit: {rain:.0f}%",
+            f"",
+            f"Without irrigation, rainfall during critical",
+            f"growth months is the main limiting factor.",
+            f"Early planting that uses spring rainfall",
+            f"before the summer drought is generally",
+            f"the most effective strategy.",
+        ]
 
-    month_trends[month_name] = {"slope": s, "p_value": p}
+    return lines
 
-    print(f"{month_name:<12} {s:>+8.4f}°C/yr "
-          f"{s*10:>+8.3f}°C/dec "
-          f"{conf:>15}")
+
+def print_combined_summary(stat_df, ml_df):
+    """Print a single-page summary of all crops."""
+    print()
+    print(separator("="))
+    print("  QUICK REFERENCE SUMMARY — ALL CROPS")
+    print(f"  {LOCATION} — No Irrigation")
+    print(separator("="))
+    print()
+
+    crop_summaries = []
+
+    for crop_key in CROPS.keys():
+        predictions = get_combined_predictions(
+            crop_key, stat_df, ml_df
+        )
+        if predictions.empty:
+            continue
+
+        best      = predictions.iloc[0]
+        crop_name = CROPS[crop_key]["name"]
+
+        crop_summaries.append({
+            "crop"       : crop_name,
+            "crop_key"   : crop_key,
+            "best_date"  : best["date_label"],
+            "score"      : best["combined"] * 100,
+            "suitability": best["suitability"],
+            "frost"      : best["frost_prob"]  * 100,
+            "heat"       : best["heat_prob"]   * 100,
+            "rain"       : best["rain_prob"]   * 100,
+        })
+
+    # Sort by combined score — best first
+    crop_summaries.sort(key=lambda x: x["score"])
+
+    print(f"  {'Crop':<14} {'Best Date':<12} "
+          f"{'Frost':>7} {'Heat':>7} {'Rain':>7} "
+          f"{'Score':>7}  Outlook")
+    print(f"  {'-'*70}")
+
+    for s in crop_summaries:
+        print(f"  {s['crop']:<14} {s['best_date']:<12} "
+              f"{s['frost']:>6.0f}% "
+              f"{s['heat']:>6.0f}% "
+              f"{s['rain']:>6.0f}% "
+              f"{s['score']:>6.0f}%  {s['suitability']}")
+
+    print()
+    print(separator("-"))
+    print()
+    print("  PLANTING CALENDAR")
+    print()
+    print("  February 15 onwards:")
+    print("    Onion sets (frost tolerant, use spring rainfall)")
+    print()
+    print("  March 1 — March 25:")
+    print("    Potato — early varieties "
+          "(key: harvest before July)")
+    print("    Onion  — transplants or direct seed")
+    print()
+    print("  March 21 — April 30:")
+    print("    Sunflower (drought tolerant, best field crop)")
+    print("    Corn      — early hybrids FAO 200-300 only")
+    print()
+    print("  April 25 — May 5:")
+    print("    Cucumber    (frost risk cleared, uses June rain)")
+    print("    Pepper      (start indoors Jan-Feb)")
+    print("    Tomato      (no safe date — accept yield risk)")
+    print()
+    print("  May 1 — May 20:")
+    print("    Watermelon  (needs warm soil above 18°C)")
+    print()
+    print(separator("-"))
+    print()
+    print("  RISK RANKING (most to least manageable)")
+    print("  without irrigation in current Vojvodina climate:")
+    print()
+    for i, s in enumerate(crop_summaries, 1):
+        bar = risk_bar(s["score"] / 100, width=10)
+        print(f"  {i}. {s['crop']:<14} {bar}  "
+              f"{s['score']:.0f}%  {s['suitability']}")
+    print()
+
+
+def print_seeding_table(stat_df, ml_df):
+    """
+    Print a focused seeding and planting calendar for
+    the four primary crops:
+    potato, tomato, onion, cucumber.
+    """
+    PRIMARY_CROPS = ["potato", "tomato", "onion", "cucumber"]
+
+    print()
+    print(separator("="))
+    print("  SEEDING AND PLANTING CALENDAR")
+    print("  Four Primary Crops — Vojvodina, No Irrigation")
+    print(f"  Based on NASA POWER data {DATA_FROM}-{DATA_TO}")
+    print(f"  Statistical risk + ML + soil temperature")
+    print(separator("="))
+
+    # Load soil readiness dates if available
+    soil_ready = {}
+    soil_safe  = {}
+    rfile      = "data/processed/soil_readiness_dates.csv"
+
+    if os.path.exists(rfile):
+        rdf = pd.read_csv(rfile)
+
+        def doy_to_str(doy):
+            return (pd.Timestamp("2024-01-01") +
+                    pd.Timedelta(days=int(doy) - 1)
+                    ).strftime("%b %d")
+
+        for crop_key in PRIMARY_CROPS:
+            crop_data = rdf[rdf["crop_key"] == crop_key]
+            if not crop_data.empty:
+                soil_ready[crop_key] = doy_to_str(
+                    crop_data["day_of_year"].mean()
+                )
+                soil_safe[crop_key] = doy_to_str(
+                    crop_data["day_of_year"].quantile(0.90)
+                )
+
+    # Indoor start dates
+    indoor_start = {
+        "potato"  : "N/A — plant tubers directly",
+        "tomato"  : "Feb 15 – Mar 1 (6-8 weeks before transplant)",
+        "onion"   : "Jan – Feb (10-12 weeks for transplants)",
+        "cucumber": "Apr 1 – Apr 10 (optional, 3-4 weeks)",
+    }
+
+    # Outdoor planting windows
+    outdoor_best = {
+        "potato"  : "Mar 10 – Mar 25",
+        "tomato"  : "Apr 10 – Apr 20",
+        "onion"   : "Mar 1 – Mar 20  (sets: Feb 15 onwards)",
+        "cucumber": "Apr 25 – May 5",
+    }
+
+    # Harvest targets
+    harvest_target = {
+        "potato"  : "Late May – late June",
+        "tomato"  : "July – September",
+        "onion"   : "Late June – July",
+        "cucumber": "June – early July (1st sowing)",
+    }
+
+    # Key risk notes
+    key_notes = {
+        "potato": (
+            "Plant EARLY varieties only. "
+            "Frost damage to shoots usually recoverable."
+        ),
+        "tomato": (
+            "No safe date without irrigation. "
+            "Success depends on June-August rainfall."
+        ),
+        "onion": (
+            "Most frost tolerant. "
+            "Long-day varieties only at 45°N latitude."
+        ),
+        "cucumber": (
+            "Any frost kills plant. "
+            "Do not plant before April 20 under any circumstances."
+        ),
+    }
+
+    # Print detailed section for each crop
+    for crop_key in PRIMARY_CROPS:
+        crop      = get_crop(crop_key)
+        crop_name = crop["name"]
+        preds     = get_combined_predictions(
+            crop_key, stat_df, ml_df
+        )
+        best      = preds.iloc[0] if not preds.empty else None
+
+        print()
+        print(f"  {crop_name.upper()} ({crop['latin']})")
+        print(f"  {'-'*56}")
+        print(f"  Start indoors:       "
+              f"{indoor_start.get(crop_key, 'N/A')}")
+        print(f"  Plant outdoors:      "
+              f"{outdoor_best.get(crop_key, 'N/A')}")
+        print(f"  Soil ready (avg):    "
+              f"{soil_ready.get(crop_key, 'N/A')}")
+        print(f"  Soil ready (90%):    "
+              f"{soil_safe.get(crop_key, 'N/A')}")
+        print(f"  Harvest target:      "
+              f"{harvest_target.get(crop_key, 'N/A')}")
+
+        if best is not None:
+            f_pct = best["frost_prob"] * 100
+            h_pct = best["heat_prob"]  * 100
+            r_pct = best["rain_prob"]  * 100
+            c_pct = best["combined"]   * 100
+            print(f"  Risk at best date:   "
+                  f"Frost {f_pct:.0f}%  "
+                  f"Heat {h_pct:.0f}%  "
+                  f"Rain {r_pct:.0f}%  "
+                  f"→ Combined {c_pct:.0f}% "
+                  f"({best['suitability']})")
+
+        note = key_notes.get(crop_key, "")
+        if note:
+            # Wrap long notes at 55 characters
+            words     = note.split()
+            line      = ""
+            first     = True
+            for word in words:
+                if len(line) + len(word) + 1 > 55:
+                    prefix = "  Key note:          " \
+                        if first else "                     "
+                    print(f"{prefix}{line}")
+                    line  = word
+                    first = False
+                else:
+                    line = (line + " " + word).strip()
+            if line:
+                prefix = "  Key note:          " \
+                    if first else "                     "
+                print(f"{prefix}{line}")
+
+    # Summary comparison table
+    print()
+    print(separator("-"))
+    print()
+    print(f"  SUMMARY TABLE")
+    print()
+    print(f"  {'Crop':<12} {'Start Indoors':<14} "
+          f"{'Plant Outdoors':<18} {'Score':>7}  Rating")
+    print(f"  {'-'*65}")
+
+    indoor_short = {
+        "potato"  : "N/A",
+        "tomato"  : "Feb 15 – Mar 1",
+        "onion"   : "Jan – Feb",
+        "cucumber": "Apr 1-10 (opt.)",
+    }
+
+    for crop_key in PRIMARY_CROPS:
+        crop_name = CROPS[crop_key]["name"]
+        preds     = get_combined_predictions(
+            crop_key, stat_df, ml_df
+        )
+        if preds.empty:
+            continue
+
+        best   = preds.iloc[0]
+        score  = best["combined"] * 100
+        suit   = best["suitability"]
+        dates  = outdoor_best.get(crop_key, "N/A")
+        indoor = indoor_short.get(crop_key, "N/A")
+
+        print(f"  {crop_name:<12} {indoor:<14} "
+              f"{dates:<18} {score:>6.0f}%  {suit}")
+
+    print()
+    print(separator("-"))
+    print()
+    print("  SOIL TEMPERATURE CROSS-CHECK")
+    print()
+    print(f"  {'Crop':<12} {'Air Rec.':<12} "
+          f"{'Soil Ready':>12} {'Safe(90%)':>11}  Match")
+    print(f"  {'-'*56}")
+
+    air_rec = {
+        "potato"  : "Mar 10-25",
+        "tomato"  : "Apr 10-20",
+        "onion"   : "Mar 1-20",
+        "cucumber": "Apr 25-May 5",
+    }
+
+    match_notes = {
+        "potato"  : "Close — soil ready Mar 8-25",
+        "tomato"  : "Good  — soil ready Apr 1-17",
+        "onion"   : "Conservative — can plant Feb",
+        "cucumber": "Good  — soil ready Apr 29",
+    }
+
+    for crop_key in PRIMARY_CROPS:
+        crop_name = CROPS[crop_key]["name"]
+        print(f"  {crop_name:<12} "
+              f"{air_rec.get(crop_key, 'N/A'):<12} "
+              f"{soil_ready.get(crop_key, 'N/A'):>12} "
+              f"{soil_safe.get(crop_key, 'N/A'):>11}  "
+              f"{match_notes.get(crop_key, '')}")
+
+    print()
+    print(separator("-"))
+    print()
+    print("  FINAL RECOMMENDED DATES")
+    print("  (combining air risk, ML, and soil temperature)")
+    print()
+    print(f"  {'Crop':<12} {'Plant Outdoors':<20} "
+          f"{'Confidence':<12}  Primary Risk")
+    print(f"  {'-'*65}")
+
+    confidence = {
+        "potato"  : "High",
+        "tomato"  : "Moderate",
+        "onion"   : "High",
+        "cucumber": "High",
+    }
+
+    primary_risk = {
+        "potato"  : "Recoverable frost",
+        "tomato"  : "Drought + heat",
+        "onion"   : "Rainfall deficit",
+        "cucumber": "Rainfall deficit",
+    }
+
+    for crop_key in PRIMARY_CROPS:
+        crop_name = CROPS[crop_key]["name"]
+        dates     = outdoor_best.get(crop_key, "N/A")
+        conf      = confidence.get(crop_key, "Moderate")
+        risk      = primary_risk.get(crop_key, "Unknown")
+        print(f"  {crop_name:<12} {dates:<20} "
+              f"{conf:<12}  {risk}")
+
+    print()
+
+
+def print_soil_temperature_note():
+    """Print soil temperature readiness dates."""
+    rfile = "data/processed/soil_readiness_dates.csv"
+    if not os.path.exists(rfile):
+        return
+
+    rdf = pd.read_csv(rfile)
+
+    print()
+    print(separator("="))
+    print("  SOIL TEMPERATURE READINESS — ALL CROPS")
+    print("  When does soil reach germination temperature?")
+    print("  (NASA POWER TSOIL data, 0-10cm depth)")
+    print(separator("="))
+    print()
+    print(f"  {'Crop':<14} {'Min Soil':>9} "
+          f"{'Avg Ready':>11} {'Safe (90%)':>12}")
+    print(f"  {'-'*50}")
+
+    def doy_to_str(doy):
+        return (pd.Timestamp("2024-01-01") +
+                pd.Timedelta(days=int(doy) - 1)
+                ).strftime("%b %d")
+
+    for crop_key in CROPS.keys():
+        crop_data = rdf[rdf["crop_key"] == crop_key]
+        if crop_data.empty:
+            continue
+
+        crop_name = CROPS[crop_key]["name"]
+        min_soil  = crop_data["min_soil_c"].iloc[0]
+        avg_doy   = crop_data["day_of_year"].mean()
+        p90_doy   = crop_data["day_of_year"].quantile(0.90)
+
+        print(f"  {crop_name:<14} "
+              f"{min_soil:>8.0f}°C "
+              f"{doy_to_str(avg_doy):>11} "
+              f"{doy_to_str(p90_doy):>12}")
+
+    print()
+    print("  Avg Ready  = average date soil reaches threshold")
+    print("  Safe (90%) = soil ready in 90% of years by this date")
+    print()
+    print("  Note: Air-temperature-based recommendations may")
+    print("  suggest planting before soil is warm enough.")
+    print("  When in doubt check actual soil temperature at")
+    print("  seeding depth before planting.")
+    print()
+
+
+def print_disclaimer():
+    print(separator("="))
+    print("  IMPORTANT — HOW TO USE THESE RECOMMENDATIONS")
+    print(separator("="))
+    print()
+    print("  These recommendations are based on 26 years of")
+    print("  historical NASA climate data for your location,")
+    print("  combined with machine learning models trained on")
+    print("  that data.")
+    print()
+    print("  What these numbers mean:")
+    print("    Frost risk   = probability of killing frost in 21")
+    print("                   days after planting")
+    print("    Heat risk    = probability of sustained damaging")
+    print("                   heat during the growing season")
+    print("    Rain deficit = probability of insufficient rainfall")
+    print("                   in critical growth months")
+    print()
+    print("  What these numbers do NOT mean:")
+    print("    They are NOT a weather forecast.")
+    print("    They cannot predict what this specific year brings.")
+    print("    A 10% frost risk means 1 in 10 years had frost —")
+    print("    that year might be this year.")
+    print()
+    print("  Warming trend note:")
+    print(f"    Vojvodina has warmed +{TOTAL_WARMING}°C since 1981.")
+    print("    Spring frost risk is decreasing.")
+    print("    Summer heat and drought risk is increasing.")
+    print("    These trends are incorporated in ML predictions.")
+    print()
+    print("  Always combine with local knowledge.")
+    print("  Watch actual soil temperature before planting.")
+    print("  Monitor the 10-day forecast around planting date.")
+    print()
+    print(separator("="))
+    print()
+
 
 # -------------------------------------------------------
-# STEP 13 - FROST DAY TREND
+# MAIN
 # -------------------------------------------------------
 
-print("\n\n--- FROST DAY TREND ---\n")
+def main():
+    # Load dynamic climate statistics from processed files
+    load_climate_stats()
 
-frost_by_year = df_complete.groupby("year").apply(
-    lambda x: (x["temp_min"] <= 0).sum()
-).reset_index()
-frost_by_year.columns = ["year", "frost_days"]
+    # Check if user asked about a specific crop
+    requested_crop = None
+    if len(sys.argv) > 1:
+        requested_crop = sys.argv[1].lower().strip()
+        if requested_crop not in CROPS:
+            print(f"\nCrop '{requested_crop}' not found.")
+            print(f"Available crops: {list(CROPS.keys())}")
+            sys.exit(1)
 
-x_f = frost_by_year["year"].values
-y_f = frost_by_year["frost_days"].values
+    # Load prediction data
+    stat_df, ml_df = load_data()
 
-s_f, i_f, r_f, p_f, se_f = stats.linregress(x_f, y_f)
+    # Print report
+    print_header()
+    print_climate_context()
 
-print(f"Frost days trend: {s_f:.3f} days per year")
-print(f"                  {s_f*10:.2f} days per decade")
-print(f"P-value:          {p_f:.4f}")
+    if requested_crop:
+        # Single crop report
+        print_crop_recommendation(
+            requested_crop, stat_df, ml_df
+        )
+    else:
+        # Full report for all crops
+        for crop_key in CROPS.keys():
+            print_crop_recommendation(
+                crop_key, stat_df, ml_df
+            )
 
-if p_f < 0.05:
-    direction = "decreasing" if s_f < 0 else "increasing"
-    print(f"Conclusion: Frost days are statistically "
-          f"significantly {direction}.")
-else:
-    print(f"Conclusion: No statistically significant trend "
-          f"in frost days detected.")
+        # Summary tables
+        print_combined_summary(stat_df, ml_df)
+        print_seeding_table(stat_df, ml_df)
 
-# -------------------------------------------------------
-# STEP 14 - HEAT DAY TREND
-# -------------------------------------------------------
+    # Soil temperature note always shown
+    print_soil_temperature_note()
+    print_disclaimer()
 
-print("\n--- HEAT DAY TREND ---\n")
 
-heat_by_year = df_complete.groupby("year").apply(
-    lambda x: (x["temp_max"] >= 35).sum()
-).reset_index()
-heat_by_year.columns = ["year", "heat_days"]
-
-x_h = heat_by_year["year"].values
-y_h = heat_by_year["heat_days"].values
-
-s_h, i_h, r_h, p_h, se_h = stats.linregress(x_h, y_h)
-
-print(f"Heat days trend:  {s_h:.3f} days per year")
-print(f"                  {s_h*10:.2f} days per decade")
-print(f"P-value:          {p_h:.4f}")
-
-if p_h < 0.05:
-    direction = "increasing" if s_h > 0 else "decreasing"
-    print(f"Conclusion: Heat days are statistically "
-          f"significantly {direction}.")
-else:
-    print(f"Conclusion: No statistically significant trend "
-          f"in heat days detected.")
-
-# -------------------------------------------------------
-# SAVE PHASE 7 OUTPUTS
-# -------------------------------------------------------
-
-annual_temp.to_csv(
-    "data/processed/annual_temperature_trends.csv")
-frost_by_year.to_csv(
-    "data/processed/frost_days_by_year.csv", index=False)
-heat_by_year.to_csv(
-    "data/processed/heat_days_by_year.csv", index=False)
-
-print("\n\nTrend data saved to data/processed/")
-print("\n=== PHASE 7 TREND ANALYSIS COMPLETE ===")
+if __name__ == "__main__":
+    main()
