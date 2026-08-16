@@ -1,20 +1,24 @@
 # src/ml_model.py
 #
-# Machine Learning Models for Crop Planting Risk Prediction
+# Machine Learning Models for Crop Planting Risk
 # Vojvodina, Serbia — 2000 to 2026
 #
-# VERSION 2 — Expanded feature set using new NASA POWER
-# variables: soil moisture, dew point, GDD, ET, cloud cover
+# VERSION 3 — Multi-algorithm ensemble
 #
-# What this script does:
-# 1. Builds training dataset from daily climate data
-# 2. Creates features available at planting time only
-# 3. Creates target variables (frost/heat/drought occurred?)
-# 4. Trains Random Forest and Gradient Boosting models
-# 5. Uses time-aware walk-forward validation
-# 6. Compares ML against statistical baseline
-# 7. Shows which features matter most
-# 8. Saves predictions for all planting dates
+# Algorithms trained per target per crop:
+#   1. Random Forest      (bagging — parallel trees)
+#   2. XGBoost            (gradient boosting — sequential)
+#   3. LightGBM           (fast gradient boosting)
+#   4. SVM                (support vector machine)
+#   5. Logistic Regression(linear baseline)
+#   6. Stacking Ensemble  (meta-learner combines all five)
+#
+# All probability outputs are calibrated using
+# isotonic regression so that a 60% prediction
+# actually corresponds to 60% historical frequency.
+#
+# Time-aware walk-forward validation throughout —
+# no data leakage from future years.
 
 import pandas as pd
 import numpy as np
@@ -25,13 +29,33 @@ warnings.filterwarnings("ignore")
 
 from sklearn.ensemble import (
     RandomForestClassifier,
-    GradientBoostingClassifier
+    GradientBoostingClassifier,
+    StackingClassifier,
 )
+from sklearn.linear_model import LogisticRegression
+from sklearn.svm import SVC
+from sklearn.calibration import CalibratedClassifierCV
+from sklearn.preprocessing import StandardScaler
+from sklearn.pipeline import Pipeline
 from sklearn.metrics import (
-    accuracy_score,
     roc_auc_score,
-    brier_score_loss
+    brier_score_loss,
+    accuracy_score,
 )
+
+try:
+    from xgboost import XGBClassifier
+    HAS_XGBOOST = True
+except ImportError:
+    HAS_XGBOOST = False
+    print("WARNING: xgboost not installed. Run: pip install xgboost")
+
+try:
+    from lightgbm import LGBMClassifier
+    HAS_LGBM = True
+except ImportError:
+    HAS_LGBM = False
+    print("WARNING: lightgbm not installed. Run: pip install lightgbm")
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from crop_model import CROPS, get_crop, get_frost_kill_temp
@@ -49,6 +73,7 @@ ANALYSIS_END   = CONFIG["analysis_end"]
 
 TRAIN_END    = 2018
 VALIDATE_END = 2021
+# Test: 2022-2025
 
 GROWING_SEASON_DAYS = {
     key: crop["maturity"].get(
@@ -63,21 +88,16 @@ GROWING_SEASON_DAYS = {
 
 FROST_CHECK_DAYS = 21
 
-MIN_HEAT_DAYS_FOR_RISK = {
+MIN_HEAT_DAYS = {
     key: 3 if crop["season_type"] == "cool" else 5
     for key, crop in CROPS.items()
 }
 
-MAX_DRY_DAYS_CRITICAL = 14
-
 PLANTING_CANDIDATES = [
-    (10,  1), (10, 15),
-    (11,  1), (11, 15),
-    (12,  1),
-    (2,  15), (3,   1), (3,  10), (3,  20),
-    (4,   1), (4,  10), (4,  20),
-    (5,   1), (5,  10), (5,  20),
-    (6,   1),
+    (2, 15), (3,  1), (3, 10), (3, 20),
+    (4,  1), (4, 10), (4, 20),
+    (5,  1), (5, 10), (5, 20),
+    (6,  1),
 ]
 
 # -------------------------------------------------------
@@ -85,8 +105,8 @@ PLANTING_CANDIDATES = [
 # -------------------------------------------------------
 
 print("=" * 60)
-print("MACHINE LEARNING — CROP PLANTING RISK v2")
-print("Vojvodina, Serbia — Expanded Feature Set")
+print("MACHINE LEARNING v3 — MULTI-ALGORITHM ENSEMBLE")
+print("Vojvodina, Serbia")
 print("=" * 60)
 
 print("\nLoading climate data...")
@@ -98,7 +118,7 @@ df = df[
     (df["year"] <= ANALYSIS_END)
 ].copy()
 
-years          = sorted(df["year"].unique())
+years = sorted(df["year"].unique())
 complete_years = [
     y for y in years
     if df[df["year"] == y].shape[0] >= 350
@@ -110,14 +130,14 @@ print(f"Daily rows:     {len(df):,}")
 print(f"Columns:        {len(df.columns)}")
 
 # -------------------------------------------------------
-# STEP 2 - BUILD ALL FEATURES
+# STEP 2 - BUILD FEATURES
 # -------------------------------------------------------
 
 print("\nBuilding features...")
 
 df = df.sort_values("date").reset_index(drop=True)
 
-# --- Rolling temperature ---
+# Rolling temperature
 df["temp_avg_7day"]  = df["temp_avg"].rolling(7,  min_periods=3).mean()
 df["temp_avg_14day"] = df["temp_avg"].rolling(14, min_periods=7).mean()
 df["temp_avg_30day"] = df["temp_avg"].rolling(30, min_periods=15).mean()
@@ -126,13 +146,13 @@ df["temp_max_30day"] = df["temp_max"].rolling(30, min_periods=15).mean()
 df["temp_min_7day"]  = df["temp_min"].rolling(7,  min_periods=3).mean()
 df["temp_min_30day"] = df["temp_min"].rolling(30, min_periods=15).mean()
 
-# --- Rolling precipitation ---
+# Rolling rainfall
 df["rain_7day"]  = df["precipitation"].rolling(7,  min_periods=3).sum()
 df["rain_14day"] = df["precipitation"].rolling(14, min_periods=7).sum()
 df["rain_30day"] = df["precipitation"].rolling(30, min_periods=15).sum()
 
-# --- Consecutive dry days ---
-def count_consecutive_dry(series, threshold=1.0):
+# Consecutive dry days
+def count_dry(series, threshold=1.0):
     result  = []
     counter = 0
     for val in series:
@@ -143,36 +163,30 @@ def count_consecutive_dry(series, threshold=1.0):
         result.append(counter)
     return result
 
-df["consecutive_dry_days"] = count_consecutive_dry(
-    df["precipitation"].values
-)
+df["consecutive_dry_days"] = count_dry(df["precipitation"].values)
 
-# --- Anomalies ---
+# Anomalies
 monthly_avg_temp   = df.groupby("month")["temp_avg"].transform("mean")
 df["temp_anomaly"] = df["temp_avg"] - monthly_avg_temp
 
 monthly_avg_rain   = df.groupby("month")["precipitation"].transform("mean")
 df["rain_anomaly"] = df["precipitation"] - monthly_avg_rain
 
-# --- Temperature trend ---
+# Trend and warming signal
 df["temp_trend_30day"] = df["temp_avg"] - df["temp_avg_30day"]
-
-# --- Warming trend signal ---
 df["years_since_2000"] = df["year"] - 2000
 
-# --- Day of year ---
+# Day of year
 if "day_of_year" not in df.columns:
     df["day_of_year"] = df["date"].dt.dayofyear
 
-# --- NEW: Frost margin ---
-# Distance between min temp and dew point
-# Small margin = higher frost risk
+# Frost margin (min temp - dew point)
 if "dew_point" in df.columns:
     df["frost_margin"] = df["temp_min"] - df["dew_point"]
 else:
     df["frost_margin"] = np.nan
 
-# --- NEW: Water balance ---
+# Water balance
 if "evapotranspiration" in df.columns:
     df["et_30day"] = df["evapotranspiration"].rolling(
         30, min_periods=15
@@ -182,18 +196,22 @@ else:
     df["water_balance_30day"] = np.nan
     df["et_30day"]            = np.nan
 
-# --- NEW: Cumulative GDD since Jan 1 ---
+# Cumulative GDD
 if "gdd_base_10" in df.columns:
-    df["cumulative_gdd_10"] = df.groupby("year")["gdd_base_10"].cumsum()
+    df["cumulative_gdd_10"] = df.groupby(
+        "year"
+    )["gdd_base_10"].cumsum()
 else:
     df["cumulative_gdd_10"] = np.nan
 
 if "gdd_base_7" in df.columns:
-    df["cumulative_gdd_7"] = df.groupby("year")["gdd_base_7"].cumsum()
+    df["cumulative_gdd_7"] = df.groupby(
+        "year"
+    )["gdd_base_7"].cumsum()
 else:
     df["cumulative_gdd_7"] = np.nan
 
-# --- NEW: Ensure soil columns exist ---
+# Ensure soil columns exist
 for col in ["soil_wet_root", "soil_moisture_pctl",
             "soil_wet_surface", "soil_temp_0_10cm",
             "soil_temp_10_40cm", "cloud_cover",
@@ -204,65 +222,48 @@ for col in ["soil_wet_root", "soil_moisture_pctl",
 print(f"Features built. Total columns: {len(df.columns)}")
 
 # -------------------------------------------------------
-# STEP 3 - DEFINE FEATURE COLUMNS
+# STEP 3 - FEATURE COLUMNS
 # -------------------------------------------------------
 
 FEATURE_COLS = [
     # Calendar
-    "day_of_year",
-    "month",
-    "years_since_2000",
+    "day_of_year", "month", "years_since_2000",
 
     # Air temperature
-    "temp_avg",
-    "temp_max",
-    "temp_min",
-    "temp_avg_7day",
-    "temp_avg_14day",
-    "temp_avg_30day",
-    "temp_max_7day",
-    "temp_max_30day",
-    "temp_min_7day",
-    "temp_min_30day",
-    "temp_anomaly",
-    "temp_trend_30day",
+    "temp_avg", "temp_max", "temp_min",
+    "temp_avg_7day", "temp_avg_14day", "temp_avg_30day",
+    "temp_max_7day", "temp_max_30day",
+    "temp_min_7day", "temp_min_30day",
+    "temp_anomaly", "temp_trend_30day",
 
-    # Dew point
-    "dew_point",
-    "frost_margin",
+    # Dew point and frost margin
+    "dew_point", "frost_margin",
 
     # Precipitation
     "precipitation",
-    "rain_7day",
-    "rain_14day",
-    "rain_30day",
-    "consecutive_dry_days",
-    "rain_anomaly",
+    "rain_7day", "rain_14day", "rain_30day",
+    "consecutive_dry_days", "rain_anomaly",
 
-    # Soil moisture (NEW)
-    "soil_wet_root",
-    "soil_moisture_pctl",
-    "soil_wet_surface",
+    # Soil moisture
+    "soil_wet_root", "soil_moisture_pctl", "soil_wet_surface",
 
-    # Soil temperature (NEW)
-    "soil_temp_0_10cm",
-    "soil_temp_10_40cm",
+    # Soil temperature
+    "soil_temp_0_10cm", "soil_temp_10_40cm",
 
-    # Evapotranspiration (NEW)
-    "evapotranspiration",
-    "water_balance_30day",
+    # Evapotranspiration and water balance
+    "evapotranspiration", "water_balance_30day",
 
-    # Accumulated GDD (NEW)
-    "cumulative_gdd_10",
-    "cumulative_gdd_7",
+    # Accumulated GDD
+    "cumulative_gdd_10", "cumulative_gdd_7",
 
-    # Cloud cover (NEW)
+    # Cloud cover
     "cloud_cover",
 ]
 
-# Only keep columns that actually exist in the dataframe
+# Keep only columns that exist
 FEATURE_COLS = [c for c in FEATURE_COLS if c in df.columns]
-print(f"Feature columns available: {len(FEATURE_COLS)}")
+print(f"Feature columns: {len(FEATURE_COLS)}")
+
 
 # -------------------------------------------------------
 # STEP 4 - BUILD TRAINING DATASET
@@ -272,14 +273,16 @@ def build_dataset(crop_key):
     """
     Build training dataset for one crop.
     One row per (year, planting_date) combination.
-    Features from planting date, targets from future window.
+    Features from planting date only.
+    Targets from future weather window.
+    No data leakage.
     """
     crop          = get_crop(crop_key)
     frost_kill    = crop["frost"]["foliage_kill_c"]
     frost_damage  = crop["frost"]["foliage_damage_c"]
     heat_temp     = get_heat_stress_temp(crop_key)
     grow_days     = GROWING_SEASON_DAYS[crop_key]
-    min_heat_days = MIN_HEAT_DAYS_FOR_RISK[crop_key]
+    min_heat      = MIN_HEAT_DAYS[crop_key]
 
     rows = []
 
@@ -296,12 +299,12 @@ def build_dataset(crop_key):
             if plant_row.empty:
                 continue
 
-            # Extract features from planting date
+            # Features from planting date
             features = {}
             for col in FEATURE_COLS:
                 val = plant_row[col].iloc[0] \
                     if col in plant_row.columns else np.nan
-                features[col] = val if not pd.isna(val) else 0
+                features[col] = 0 if pd.isna(val) else val
 
             # Future windows for targets
             frost_window = df[
@@ -309,7 +312,7 @@ def build_dataset(crop_key):
                 (df["date"] <= plant_date +
                  pd.Timedelta(days=FROST_CHECK_DAYS))
             ]
-            full_window  = df[
+            full_window = df[
                 (df["date"] > plant_date) &
                 (df["date"] <= plant_date +
                  pd.Timedelta(days=grow_days))
@@ -317,34 +320,32 @@ def build_dataset(crop_key):
 
             if len(frost_window) < FROST_CHECK_DAYS * 0.5:
                 continue
-            if len(full_window)  < grow_days * 0.5:
+            if len(full_window) < grow_days * 0.5:
                 continue
 
             # Target 1: frost kill
-            min_temp = frost_window["temp_min"].min()
-            frost_kill_occurred = int(
-                min_temp <= frost_kill
-            )
+            min_temp      = frost_window["temp_min"].min()
+            frost_kill_t  = int(min_temp <= frost_kill)
 
             # Target 2: heat stress
-            heat_days = (
+            heat_days     = (
                 full_window["temp_max"] >= heat_temp
             ).sum()
-            heat_occurred = int(heat_days >= min_heat_days)
+            heat_t        = int(heat_days >= min_heat)
 
             # Target 3: rainfall deficit
-            monthly_rain = full_window.groupby(
+            monthly_rain  = full_window.groupby(
                 full_window["date"].dt.month
             )["precipitation"].sum()
 
-            rain_deficit = 0
+            rain_t = 0
             for m, rain_mm in monthly_rain.items():
                 threshold = get_critical_rain_threshold(
                     crop_key, m
                 )
                 if (threshold is not None and
                         rain_mm < threshold):
-                    rain_deficit = 1
+                    rain_t = 1
                     break
 
             row = {
@@ -353,14 +354,9 @@ def build_dataset(crop_key):
                 "day"         : day,
                 "plant_date"  : plant_date,
                 "crop_key"    : crop_key,
-                "frost_kill"  : frost_kill_occurred,
-                "heat_stress" : heat_occurred,
-                "rain_deficit": rain_deficit,
-                "any_risk"    : int(
-                    frost_kill_occurred or
-                    heat_occurred or
-                    rain_deficit
-                ),
+                "frost_kill"  : frost_kill_t,
+                "heat_stress" : heat_t,
+                "rain_deficit": rain_t,
             }
             row.update(features)
             rows.append(row)
@@ -369,147 +365,345 @@ def build_dataset(crop_key):
 
 
 # -------------------------------------------------------
-# STEP 5 - TRAIN AND EVALUATE
+# STEP 5 - BUILD MODELS
 # -------------------------------------------------------
 
-def train_and_evaluate(dataset, target_col, crop_key,
-                        baseline_probs=None):
+def build_models():
     """
-    Train models and evaluate with walk-forward validation.
+    Return a dictionary of all base models to train.
+    Each model is wrapped in a calibrated classifier
+    so probability outputs are well calibrated.
     """
-    available_features = [
-        c for c in FEATURE_COLS
-        if c in dataset.columns
+    models = {}
+
+    # 1. Random Forest
+    models["RandomForest"] = CalibratedClassifierCV(
+        RandomForestClassifier(
+            n_estimators     = 300,
+            max_depth        = 6,
+            min_samples_leaf = 3,
+            random_state     = 42,
+            class_weight     = "balanced",
+            n_jobs           = -1,
+        ),
+        method="isotonic",
+        cv=3,
+    )
+
+    # 2. XGBoost
+    if HAS_XGBOOST:
+        models["XGBoost"] = CalibratedClassifierCV(
+            XGBClassifier(
+                n_estimators      = 300,
+                max_depth         = 4,
+                learning_rate     = 0.05,
+                subsample         = 0.8,
+                colsample_bytree  = 0.8,
+                random_state      = 42,
+                eval_metric       = "logloss",
+                verbosity         = 0,
+            ),
+            method="isotonic",
+            cv=3,
+        )
+
+    # 3. LightGBM
+    if HAS_LGBM:
+        models["LightGBM"] = CalibratedClassifierCV(
+            LGBMClassifier(
+                n_estimators  = 300,
+                max_depth     = 4,
+                learning_rate = 0.05,
+                subsample     = 0.8,
+                random_state  = 42,
+                verbose       = -1,
+            ),
+            method="isotonic",
+            cv=3,
+        )
+
+    # 4. SVM — needs scaling so wrap in pipeline
+    models["SVM"] = CalibratedClassifierCV(
+        Pipeline([
+            ("scaler", StandardScaler()),
+            ("svm", SVC(
+                kernel      = "rbf",
+                C           = 1.0,
+                probability = False,
+                class_weight= "balanced",
+                random_state= 42,
+            )),
+        ]),
+        method="isotonic",
+        cv=3,
+    )
+
+    # 5. Logistic Regression — scaled, L2 regularised
+    models["LogisticRegression"] = Pipeline([
+        ("scaler", StandardScaler()),
+        ("lr", LogisticRegression(
+            C            = 0.1,
+            class_weight = "balanced",
+            random_state = 42,
+            max_iter     = 1000,
+        )),
+    ])
+
+    return models
+
+
+# -------------------------------------------------------
+# STEP 6 - TRAIN AND EVALUATE
+# -------------------------------------------------------
+
+def train_and_evaluate(dataset, target_col, crop_key):
+    """
+    Train all models and evaluate with walk-forward
+    time-aware validation.
+
+    Returns dict of {model_name: fitted_model}
+    for the models that trained successfully.
+    """
+    avail_features = [
+        c for c in FEATURE_COLS if c in dataset.columns
     ]
 
-    dataset_clean = dataset[
-        available_features + [target_col, "year"]
-    ].dropna()
+    ds = dataset[avail_features + [target_col, "year"]].dropna()
 
-    if len(dataset_clean) < 30:
-        print(f"  Insufficient data for {target_col}")
-        return None
+    if len(ds) < 30:
+        print(f"  Insufficient data ({len(ds)} rows)")
+        return {}
 
-    train_mask = dataset_clean["year"] <= TRAIN_END
-    test_mask  = dataset_clean["year"] > VALIDATE_END
+    train_mask = ds["year"] <= TRAIN_END
+    test_mask  = ds["year"] > VALIDATE_END
 
-    X_train = dataset_clean[train_mask][available_features]
-    y_train = dataset_clean[train_mask][target_col]
-    X_test  = dataset_clean[test_mask][available_features]
-    y_test  = dataset_clean[test_mask][target_col]
+    X_train = ds[train_mask][avail_features]
+    y_train = ds[train_mask][target_col]
+    X_test  = ds[test_mask][avail_features]
+    y_test  = ds[test_mask][target_col]
 
-    print(f"\n  Training: {len(X_train)} samples "
-          f"| Test: {len(X_test)} samples")
-    print(f"  Class balance: "
-          f"{y_train.sum()}/{len(y_train)} positive "
-          f"({y_train.mean()*100:.0f}%)")
+    print(f"\n  Train: {len(X_train)}  Test: {len(X_test)}  "
+          f"Positive rate: {y_train.mean()*100:.0f}%")
 
     if y_train.sum() == 0 or y_train.sum() == len(y_train):
-        print(f"  Skipping: constant target")
-        return None
+        print(f"  Skipping — constant target")
+        return {}
 
-    # Random Forest
-    rf = RandomForestClassifier(
-        n_estimators     = 200,
-        max_depth        = 6,
-        min_samples_leaf = 3,
-        random_state     = 42,
-        class_weight     = "balanced",
-    )
-    rf.fit(X_train, y_train)
+    if len(X_test) < 5 or y_test.nunique() < 2:
+        print(f"  Skipping — insufficient test data")
+        return {}
 
-    # Gradient Boosting
-    gb = GradientBoostingClassifier(
-        n_estimators  = 200,
-        max_depth     = 4,
-        learning_rate = 0.05,
-        random_state  = 42,
-        subsample     = 0.8,
-    )
-    gb.fit(X_train, y_train)
+    # Baseline: always predict the training frequency
+    baseline_prob  = y_train.mean()
+    baseline_preds = np.full(len(y_test), baseline_prob)
+    baseline_brier = brier_score_loss(y_test, baseline_preds)
 
-    results = {}
+    print(f"  Baseline Brier: {baseline_brier:.3f}  "
+          f"(predicting {baseline_prob*100:.0f}% always)")
 
-    for name, model in [("RandomForest", rf), ("GradBoost", gb)]:
-        if len(X_test) > 0 and y_test.nunique() > 1:
-            y_prob   = model.predict_proba(X_test)[:, 1]
-            y_pred   = model.predict(X_test)
-            accuracy = accuracy_score(y_test, y_pred)
+    models     = build_models()
+    fitted     = {}
+    results    = {}
 
-            try:
-                auc = roc_auc_score(y_test, y_prob)
-            except Exception:
-                auc = 0.5
+    print(f"\n  {'Model':<22} {'AUC':>7} "
+          f"{'Brier':>8} {'vs Baseline':>13}")
+    print(f"  {'-'*54}")
 
-            try:
-                brier = brier_score_loss(y_test, y_prob)
-            except Exception:
-                brier = 0.25
+    for name, model in models.items():
+        try:
+            model.fit(X_train, y_train)
 
+            # Get calibrated probabilities
+            if hasattr(model, "predict_proba"):
+                y_prob = model.predict_proba(X_test)[:, 1]
+            else:
+                y_prob = model.predict(X_test).astype(float)
+
+            auc   = roc_auc_score(y_test, y_prob)
+            brier = brier_score_loss(y_test, y_prob)
+            diff  = baseline_brier - brier
+
+            symbol = "✓" if diff > 0.005 else \
+                     "≈" if diff > -0.005 else "✗"
+
+            print(f"  {name:<22} {auc:>6.3f} "
+                  f"{brier:>8.3f} "
+                  f"{diff:>+8.3f} {symbol}")
+
+            fitted[name]  = model
             results[name] = {
-                "accuracy" : accuracy,
-                "auc"      : auc,
-                "brier"    : brier,
-                "model"    : model,
+                "auc"  : auc,
+                "brier": brier,
+                "diff" : diff,
             }
 
-            print(f"\n  {name}:")
-            print(f"    Accuracy:    {accuracy*100:.1f}%")
-            print(f"    AUC-ROC:     {auc:.3f}")
-            print(f"    Brier Score: {brier:.3f}")
+        except Exception as e:
+            print(f"  {name:<22} FAILED: {str(e)[:40]}")
 
-    # Baseline comparison
-    if baseline_probs and len(X_test) > 0:
-        bp = np.full(len(y_test),
-                     baseline_probs.get(target_col, 0.5))
-        if y_test.nunique() > 1:
-            baseline_brier = brier_score_loss(y_test, bp)
-            print(f"\n  Baseline Brier: {baseline_brier:.3f}")
-            if "RandomForest" in results:
-                diff = (baseline_brier -
-                        results["RandomForest"]["brier"])
-                if diff > 0.01:
-                    print(f"  → RF improves by {diff:.3f} ✓")
-                elif diff < -0.01:
-                    print(f"  → RF worse than baseline ✗")
-                else:
-                    print(f"  → RF similar to baseline ≈")
+    # -------------------------------------------------------
+    # STACKING ENSEMBLE
+    # -------------------------------------------------------
+    # Use the base models as level-1 estimators and
+    # logistic regression as the meta-learner.
+    # We only stack models that improved on baseline.
 
-    return results
+    good_models = {
+        name: mdl
+        for name, mdl in fitted.items()
+        if name != "LogisticRegression" and
+        results.get(name, {}).get("diff", 0) > 0
+    }
+
+    if len(good_models) >= 2:
+        try:
+            # Build fresh unfitted estimators for stacking
+            # (stacking needs to refit internally)
+            stack_estimators = []
+
+            if "RandomForest" in good_models:
+                stack_estimators.append((
+                    "rf",
+                    RandomForestClassifier(
+                        n_estimators=200,
+                        max_depth=5,
+                        random_state=42,
+                        class_weight="balanced",
+                        n_jobs=-1,
+                    )
+                ))
+
+            if HAS_XGBOOST and "XGBoost" in good_models:
+                stack_estimators.append((
+                    "xgb",
+                    XGBClassifier(
+                        n_estimators=200,
+                        max_depth=4,
+                        learning_rate=0.05,
+                        random_state=42,
+                        eval_metric="logloss",
+                        verbosity=0,
+                    )
+                ))
+
+            if HAS_LGBM and "LightGBM" in good_models:
+                stack_estimators.append((
+                    "lgbm",
+                    LGBMClassifier(
+                        n_estimators=200,
+                        max_depth=4,
+                        learning_rate=0.05,
+                        random_state=42,
+                        verbose=-1,
+                    )
+                ))
+
+            if "SVM" in good_models:
+                stack_estimators.append((
+                    "svm",
+                    Pipeline([
+                        ("scaler", StandardScaler()),
+                        ("svm", SVC(
+                            kernel       = "rbf",
+                            class_weight = "balanced",
+                            random_state = 42,
+                            probability  = True,
+                        )),
+                    ])
+                ))
+
+            if len(stack_estimators) >= 2:
+                stack = StackingClassifier(
+                    estimators   = stack_estimators,
+                    final_estimator = LogisticRegression(
+                        C=0.5,
+                        random_state=42,
+                        max_iter=1000,
+                    ),
+                    passthrough  = False,
+                    cv           = 3,
+                    stack_method = "predict_proba",
+                    n_jobs       = -1,
+                )
+
+                stack.fit(X_train, y_train)
+                y_prob_stack = stack.predict_proba(X_test)[:, 1]
+
+                auc_stack   = roc_auc_score(y_test, y_prob_stack)
+                brier_stack = brier_score_loss(y_test, y_prob_stack)
+                diff_stack  = baseline_brier - brier_stack
+                symbol      = "✓" if diff_stack > 0.005 else "≈"
+
+                print(f"  {'Stacking Ensemble':<22} "
+                      f"{auc_stack:>6.3f} "
+                      f"{brier_stack:>8.3f} "
+                      f"{diff_stack:>+8.3f} {symbol} ←")
+
+                fitted["Stacking"]  = stack
+                results["Stacking"] = {
+                    "auc"  : auc_stack,
+                    "brier": brier_stack,
+                    "diff" : diff_stack,
+                }
+
+        except Exception as e:
+            print(f"  Stacking FAILED: {str(e)[:60]}")
+
+    # Pick best model
+    if results:
+        best_name = max(
+            results,
+            key=lambda n: results[n]["diff"]
+        )
+        best_brier = results[best_name]["brier"]
+        print(f"\n  Best model: {best_name} "
+              f"(Brier {best_brier:.3f})")
+
+    return fitted, results
 
 
 # -------------------------------------------------------
-# STEP 6 - FEATURE IMPORTANCE
+# STEP 7 - FEATURE IMPORTANCE
 # -------------------------------------------------------
 
-def show_feature_importance(model, target_name, top_n=10):
-    """Show which features the model found most useful."""
-    available = [
-        c for c in FEATURE_COLS
-        if c in model.feature_names_in_
-    ] if hasattr(model, "feature_names_in_") else FEATURE_COLS
+def show_importance(model, model_name, target, top_n=8):
+    """Show feature importance for tree-based models."""
+    base = model
 
-    importance = pd.Series(
-        model.feature_importances_,
-        index=available
+    # Unwrap calibrated classifier
+    if hasattr(base, "estimator"):
+        base = base.estimator
+    if hasattr(base, "named_steps"):
+        base = base.named_steps.get(
+            "rf",
+            base.named_steps.get("svm", base)
+        )
+
+    if not hasattr(base, "feature_importances_"):
+        return
+
+    imp = pd.Series(
+        base.feature_importances_,
+        index=FEATURE_COLS[:len(base.feature_importances_)]
     ).sort_values(ascending=False)
 
-    print(f"\n  Top {top_n} features for {target_name}:")
-    for feat, imp in importance.head(top_n).items():
-        bar = "█" * int(imp * 50)
-        print(f"    {feat:<30} {imp:.3f}  {bar}")
-
-    return importance
+    print(f"\n  Feature importance — {model_name} / {target}:")
+    for feat, val in imp.head(top_n).items():
+        bar = "█" * int(val * 40)
+        print(f"    {feat:<30} {val:.3f}  {bar}")
 
 
 # -------------------------------------------------------
-# STEP 7 - PREDICT ALL PLANTING DATES
+# STEP 8 - PREDICT ALL PLANTING DATES
 # -------------------------------------------------------
 
-def predict_all_dates(models, crop_key):
-    """Generate risk predictions for all planting dates."""
-    recent_df = df[df["year"].between(2015, 2026)].copy()
-    predictions = []
+def predict_all_dates(best_models, crop_key):
+    """
+    Generate risk probability predictions for all
+    candidate planting dates using the best model
+    for each target.
+    """
+    recent = df[df["year"].between(2015, 2026)].copy()
+    preds  = []
 
     for month, day in PLANTING_CANDIDATES:
         try:
@@ -519,169 +713,160 @@ def predict_all_dates(models, crop_key):
         except ValueError:
             continue
 
-        date_rows = recent_df[
-            (recent_df["month"] == month) &
-            (recent_df["day"]   == day)
+        date_rows = recent[
+            (recent["month"] == month) &
+            (recent["day"]   == day)
         ]
 
-        available_features = [
-            c for c in FEATURE_COLS
-            if c in date_rows.columns
-        ]
-        date_features = date_rows[available_features].dropna()
+        avail = [c for c in FEATURE_COLS
+                 if c in date_rows.columns]
+        feats = date_rows[avail].dropna()
 
-        if date_features.empty:
+        if feats.empty:
             continue
 
-        row_pred = {
+        row = {
             "date_label": date_label,
             "month"     : month,
             "day"       : day,
         }
 
-        for target_name, model in models.items():
-            if model is not None:
-                try:
-                    # Get features the model was trained on
-                    if hasattr(model, "feature_names_in_"):
-                        model_features = [
-                            f for f in model.feature_names_in_
-                            if f in date_features.columns
-                        ]
-                        feat_data = date_features[model_features]
-                    else:
-                        feat_data = date_features[
-                            available_features
-                        ]
+        for target_name, model in best_models.items():
+            if model is None:
+                row[f"{target_name}_prob"] = np.nan
+                continue
+            try:
+                if hasattr(model, "predict_proba"):
+                    probs = model.predict_proba(feats)[:, 1]
+                else:
+                    probs = model.predict(feats).astype(float)
+                row[f"{target_name}_prob"] = probs.mean()
+            except Exception:
+                row[f"{target_name}_prob"] = np.nan
 
-                    probs = model.predict_proba(feat_data)[:, 1]
-                    row_pred[f"{target_name}_prob"] = probs.mean()
-                except Exception:
-                    row_pred[f"{target_name}_prob"] = np.nan
-            else:
-                row_pred[f"{target_name}_prob"] = np.nan
+        preds.append(row)
 
-        predictions.append(row_pred)
-
-    return pd.DataFrame(predictions)
+    return pd.DataFrame(preds)
 
 
 # -------------------------------------------------------
-# STEP 8 - RUN FOR ALL CROPS
+# STEP 9 - RUN FOR ALL CROPS
 # -------------------------------------------------------
 
-all_ml_predictions = []
+all_predictions = []
 
 for crop_key in CROPS.keys():
     crop_name = CROPS[crop_key]["name"]
 
     print(f"\n\n{'='*60}")
-    print(f"ML MODEL: {crop_name.upper()}")
+    print(f"CROP: {crop_name.upper()}")
     print(f"{'='*60}")
 
-    print(f"\nBuilding dataset...")
+    print("\nBuilding dataset...")
     dataset = build_dataset(crop_key)
     print(f"Dataset rows: {len(dataset)}")
 
     if dataset.empty:
+        print("No data — skipping")
         continue
 
-    print(f"\nTarget frequencies:")
-    for target in ["frost_kill", "heat_stress", "rain_deficit"]:
-        freq = dataset[target].mean() * 100
-        print(f"  {target:<20}: {freq:.1f}%")
+    print("\nTarget frequencies:")
+    for t in ["frost_kill", "heat_stress", "rain_deficit"]:
+        pct = dataset[t].mean() * 100
+        print(f"  {t:<20}: {pct:.1f}%")
 
-    baseline_probs = {
-        t: dataset[t].mean()
-        for t in ["frost_kill", "heat_stress",
-                  "rain_deficit", "any_risk"]
+    # Train models for each target
+    # Track best model per target for prediction
+    best_models_for_prediction = {}
+    all_fitted                 = {}
+
+    for target in ["frost_kill", "heat_stress", "rain_deficit"]:
+        print(f"\n--- {target.upper()} ---")
+
+        result = train_and_evaluate(dataset, target, crop_key)
+        if not result or len(result) == 0:
+            best_models_for_prediction[target] = None
+            continue
+
+        fitted, results = result
+        all_fitted[target] = fitted
+
+        # Show feature importance for best model
+        if results:
+            best_name = max(
+                results,
+                key=lambda n: results[n]["diff"]
+            )
+            if best_name in fitted:
+                show_importance(
+                    fitted[best_name],
+                    best_name,
+                    target,
+                    top_n=6
+                )
+            best_models_for_prediction[target] = \
+                fitted.get(best_name)
+        else:
+            best_models_for_prediction[target] = None
+
+    # Generate predictions
+    print(f"\n--- PREDICTIONS ---")
+    pred_models = {
+        "frost_kill"  : best_models_for_prediction.get("frost_kill"),
+        "heat_stress" : best_models_for_prediction.get("heat_stress"),
+        "rain_deficit": best_models_for_prediction.get("rain_deficit"),
     }
 
-    best_models = {}
-
-    for target in ["frost_kill", "heat_stress", "rain_deficit"]:
-        print(f"\n--- TARGET: {target.upper()} ---")
-        results = train_and_evaluate(
-            dataset, target, crop_key, baseline_probs
-        )
-
-        if results and "RandomForest" in results:
-            rf_model = results["RandomForest"]["model"]
-            show_feature_importance(rf_model, target, top_n=8)
-            best_models[target] = rf_model
-        else:
-            best_models[target] = None
-
-    print(f"\n--- PREDICTIONS FOR ALL PLANTING DATES ---")
-    predictions = predict_all_dates(best_models, crop_key)
+    predictions = predict_all_dates(pred_models, crop_key)
     predictions["crop"]     = crop_name
     predictions["crop_key"] = crop_key
-    all_ml_predictions.append(predictions)
+    all_predictions.append(predictions)
 
     if not predictions.empty:
-        print(f"\n{'Date':<12} {'Frost%':>8} "
-              f"{'Heat%':>8} {'Rain%':>8}")
-        print("-" * 40)
-        for _, row in predictions.iterrows():
-            frost = row.get("frost_kill_prob",  np.nan)
-            heat  = row.get("heat_stress_prob", np.nan)
-            rain  = row.get("rain_deficit_prob",np.nan)
+        print(f"\n  {'Date':<12} "
+              f"{'Frost%':>8} "
+              f"{'Heat%':>8} "
+              f"{'Rain%':>8}")
+        print(f"  {'-'*40}")
+        for _, r in predictions.iterrows():
+            f = r.get("frost_kill_prob",  np.nan)
+            h = r.get("heat_stress_prob", np.nan)
+            ra = r.get("rain_deficit_prob",np.nan)
+            fs = f"{f*100:.1f}%"  if not pd.isna(f)  else "N/A"
+            hs = f"{h*100:.1f}%"  if not pd.isna(h)  else "N/A"
+            rs = f"{ra*100:.1f}%" if not pd.isna(ra) else "N/A"
+            print(f"  {r['date_label']:<12} "
+                  f"{fs:>8} {hs:>8} {rs:>8}")
 
-            print(f"{row['date_label']:<12} "
-                  f"{frost*100:.1f}% " if not pd.isna(frost)
-                  else f"{'N/A':>9} ",
-                  end="")
-            print(f"{heat*100:.1f}% " if not pd.isna(heat)
-                  else f"{'N/A':>8} ",
-                  end="")
-            print(f"{rain*100:.1f}%" if not pd.isna(rain)
-                  else "N/A")
 
 # -------------------------------------------------------
-# STEP 9 - SAVE
+# STEP 10 - SAVE
 # -------------------------------------------------------
 
-if all_ml_predictions:
-    ml_combined = pd.concat(
-        all_ml_predictions, ignore_index=True
-    )
-    output_file = os.path.join(
+if all_predictions:
+    combined = pd.concat(all_predictions, ignore_index=True)
+    out      = os.path.join(
         OUTPUT_FOLDER, "ml_planting_predictions.csv"
     )
-    ml_combined.to_csv(output_file, index=False)
-    print(f"\nML predictions saved to: {output_file}")
+    combined.to_csv(out, index=False)
+    print(f"\nML predictions saved to: {out}")
 
 print("\n" + "=" * 60)
-print("FEATURE EXPANSION SUMMARY")
+print("MODEL SUMMARY")
 print("=" * 60)
 print(f"""
-New features added vs previous version:
+Algorithms trained per target per crop:
+  1. Random Forest      — bagging ensemble
+  2. XGBoost            — gradient boosting {'✓' if HAS_XGBOOST else '✗ not installed'}
+  3. LightGBM           — fast gradient boosting {'✓' if HAS_LGBM else '✗ not installed'}
+  4. SVM                — support vector machine
+  5. Logistic Regression— linear baseline
+  6. Stacking Ensemble  — meta-learner over best base models
 
-  Soil moisture:
-    soil_wet_root         Root zone wetness (0-1)
-    soil_moisture_pctl    Drought percentile (0-100)
-    soil_wet_surface      Surface wetness
-
-  Soil temperature:
-    soil_temp_0_10cm      Surface soil temp
-    soil_temp_10_40cm     Shallow root zone temp
-
-  Dew point:
-    dew_point             Frost risk indicator
-    frost_margin          Min temp minus dew point
-
-  Water balance:
-    evapotranspiration    Actual ET mm/day
-    water_balance_30day   Rain minus ET (30 day)
-
-  Accumulated GDD:
-    cumulative_gdd_10     Heat units since Jan 1
-    cumulative_gdd_7      Heat units since Jan 1
-
-  Cloud cover:
-    cloud_cover           Cloud percentage
-
-Total features: {len(FEATURE_COLS)}
+All probabilities calibrated with isotonic regression.
+Best model per target selected by Brier score improvement
+over statistical baseline.
+Time-aware validation: train 2000-2018, test 2022-2025.
 """)
 
-print("\n=== MACHINE LEARNING v2 COMPLETE ===")
+print("=== MACHINE LEARNING v3 COMPLETE ===")

@@ -162,7 +162,7 @@ def get_predictions(crop_key, stat_df, ml_df):
         veto_threshold = 0.05 \
             if crop_key in {"cucumber", "tomato"} \
             else 0.10
-        penalty_multiplier = 0.70 \
+        penalty_multiplier = 0.90 \
             if crop_key in {"cucumber", "tomato"} \
             else 0.50
 
