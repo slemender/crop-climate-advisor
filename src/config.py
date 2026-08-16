@@ -108,7 +108,7 @@ CONFIG = {
     "location_name" : _optional("LOCATION_NAME", "Unknown Location"),
 
     # File paths (relative to project root)
-    "raw_data_file"   : "data/raw/nasa_power_daily.csv",
+    "raw_data_file"   : "data/raw/vojvodina_nasa_power_daily.csv",
     "clean_data_file" : "data/processed/vojvodina_clean.csv",
     "crops_file"      : "data/crops.json",
     "risk_scores_file": "data/processed/planting_date_risk_scores.csv",
