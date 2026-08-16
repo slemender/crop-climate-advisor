@@ -18,6 +18,7 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 
+
 # -------------------------------------------------------
 # FIND AND LOAD .env FILE
 # -------------------------------------------------------
@@ -125,6 +126,13 @@ CONFIG = {
 
     # Environment file location (for reference)
     "env_file"        : str(_env_path),
+
+    # Copernicus Climate Data Store (ERA5-Land soil temperature)
+    "cds_api_key"     : _optional("CDS_API_KEY", None),
+    "era5_start_year" : int(_optional("ERA5_START_YEAR", "1950")),
+    "era5_end_year"   : int(_optional("ERA5_END_YEAR",   "2025")),
+    "soil_temp_file"  : "data/raw/era5_soil_temperature.csv",
+    "soil_temp_clean" : "data/processed/soil_temperature_clean.csv",
 }
 
 # -------------------------------------------------------
